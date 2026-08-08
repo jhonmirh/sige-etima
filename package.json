@@ -1,0 +1,13 @@
+{
+  "name": "sige-etima",
+  "private": true,
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "npm run dev -w @sige/api & npm run dev -w @sige/web",
+    "build": "npm run build -w @sige/api && npm run build -w @sige/web",
+    "test": "npm run test -w @sige/api",
+    "db:generate": "npm run prisma:generate -w @sige/api",
+    "db:migrate": "npm run prisma:migrate -w @sige/api",
+    "db:seed": "npm run prisma:seed -w @sige/api"
+  }
+}

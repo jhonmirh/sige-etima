@@ -1,0 +1,1 @@
+import './globals.css'; export const metadata={title:'SIGE-ETIMA',description:'Sistema Integral de Gestión Escolar'}; export default function RootLayout({children}:{children:React.ReactNode}){return <html lang="es"><body>{children}</body></html>}
