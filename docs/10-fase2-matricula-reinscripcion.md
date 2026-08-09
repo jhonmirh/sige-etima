@@ -45,13 +45,18 @@ Cada oportunidad continuará usando primera y segunda forma según la normativa 
 
 La sección incorpora `rosterLockedAt`.
 
-Antes del cierre de nómina:
-- los estudiantes pueden estar sin número definitivo;
-- al cerrar, se ordenan por cédula y se asigna el número fijo.
+Antes del 31 de octubre del año en que inicia el período escolar:
+- la nómina es `PROVISIONAL`;
+- se ordena por el valor numérico de la cédula dentro de cada nómina;
+- el número visible todavía puede cambiar si entra otro estudiante con una cédula menor.
 
-Después del cierre:
-- todo nuevo inscrito se agrega al final;
+Desde el 31 de octubre inclusive:
+- el sistema fija automáticamente la nómina, sin botón ni intervención manual;
+- los números ocupados quedan permanentes;
+- toda inscripción o reinscripción posterior se agrega al final por fecha de registro;
 - un retiro nunca reutiliza ni altera el número del estudiante.
+
+La fecha de cierre no se parametriza cada año: se calcula siempre como 31/10 del año calendario de inicio.
 
 ## Reinscripción
 
@@ -73,11 +78,13 @@ Flujo:
 Ruta web: `/enrollments/configuration`
 
 Permite:
-- crear años escolares;
+- crear años escolares definiendo únicamente inicio y culminación;
+- visualizar el cierre automático de matrícula (31 de octubre del año de inicio);
 - activar un período;
 - crear secciones;
-- clonar secciones desde otro período;
-- cerrar nómina inicial y fijar números de lista.
+- clonar secciones desde otro período.
+
+El cierre y fijación de nómina ya no requieren acción manual.
 
 ## Seguridad
 
@@ -113,4 +120,4 @@ La matrícula no se elimina y el número de lista no se modifica. Los primeros 3
 
 ## Prueba de orden de nómina
 
-Antes del cierre, la vista previa se ordena por el valor numérico de la cédula. Al cerrar la nómina, ese orden se convierte en números de lista 1..N. Los inscritos posteriores reciben `max(listNumber)+1`.
+Antes del 31 de octubre, la vista previa se ordena por el valor numérico de la cédula. Al comenzar el 31 de octubre (hora institucional de Venezuela), el sistema convierte automáticamente ese orden en números de lista 1..N. Los inscritos o reinscritos posteriores reciben `max(listNumber)+1` y se agregan al final por fecha de registro.

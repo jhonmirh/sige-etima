@@ -1,0 +1,47 @@
+SIGE-ETIMA V2.0.3.4 — CIERRE AUTOMÁTICO DE MATRÍCULA
+=====================================================
+
+REGLA IMPLEMENTADA
+------------------
+El cierre de matrícula es siempre el 31 de octubre del año en que inicia el período escolar.
+No se configura manualmente.
+
+Ejemplo:
+2026-2027 / inicio 30-09-2026 -> cierre automático 31-10-2026.
+
+INSTALACIÓN DEL PARCHE
+----------------------
+1. Abra PowerShell.
+2. Ejecute:
+
+   cd C:\sige-etima
+   docker compose stop api web
+
+3. Descomprima el ZIP del parche.
+4. Copie el CONTENIDO de la carpeta SIGE-ETIMA-V2.0.3.4-PARCHE sobre C:\sige-etima
+   y acepte reemplazar los archivos.
+
+5. Reconstruya API y WEB:
+
+   docker compose build api web
+
+6. Levante ambos servicios:
+
+   docker compose up -d --force-recreate api web
+
+7. Compruebe:
+
+   docker compose ps
+
+   Debe mostrar db Up (healthy), api Up y web Up.
+
+8. Abra http://localhost:3000 y presione Ctrl + F5.
+
+IMPORTANTE
+----------
+- NO use docker compose down -v.
+- NO use prisma migrate reset.
+- Esta versión NO cambia el esquema Prisma.
+- No es necesario ejecutar prisma db push manualmente por este parche.
+- Los años escolares existentes se normalizan automáticamente al 31 de octubre
+  correspondiente cuando el sistema consulta la configuración académica.

@@ -3,8 +3,9 @@
 ## Matrícula y nómina
 - Un estudiante solo puede tener una matrícula por año escolar.
 - La sección se valida contra año escolar, plan y grado.
-- Antes del cierre de matrícula, la nómina puede numerarse por cédula.
-- Después del cierre, una nueva inscripción se agrega al final y nunca desplaza números anteriores.
+- El cierre de matrícula es automático y permanente: 31 de octubre del año en que inicia cada período escolar.
+- Antes del 31 de octubre, la nómina es provisional y se ordena numéricamente por cédula.
+- Desde el 31 de octubre inclusive, la nómina queda fija automáticamente y una nueva inscripción o reinscripción se agrega al final sin desplazar números anteriores.
 - Un retiro no elimina al estudiante ni libera su número de lista.
 
 ## Retiros
@@ -45,4 +46,4 @@ La narrativa no fija una fórmula matemática única para promediar las 2–5 ev
 - Más de 2 reprobadas: REPITIENTE, permanece en el mismo grado y cursa únicamente las materias reprobadas.
 - La fuente de esta condición es la Definitiva Anual del módulo de Notas.
 - Secretaría no puede modificar ordinariamente la condición calculada; solo ADMIN/DIRECTOR disponen de corrección excepcional auditada.
-- El número de lista se fija al cerrar la nómina. Retiros y altas posteriores no renumeran estudiantes existentes.
+- El número de lista se fija automáticamente el 31 de octubre. Retiros y altas posteriores no renumeran estudiantes existentes.

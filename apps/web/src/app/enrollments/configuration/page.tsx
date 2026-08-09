@@ -6,12 +6,11 @@ import { ArrowLeft, CalendarPlus, Copy, Plus, Power, School } from 'lucide-react
 import Shell from '@/components/Shell';
 import { api } from '@/lib/api';
 import { nameOnlyInput, toUpperInput } from '@/lib/formRules';
+import { automaticCloseLabelFromStart, dateLabel, schoolDateKey, storedDateKey } from '@/lib/schoolCalendar';
 
-function dateLabel(v: any) { return v ? new Date(v).toLocaleDateString('es-VE') : 'NO DEFINIDO'; }
-function isoDay(v: any) { return v ? new Date(v).toISOString().slice(0, 10) : ''; }
 function closeReached(section: any) {
   const close = section?.academicYear?.enrollmentCloseDate;
-  return !!close && new Date().toISOString().slice(0, 10) >= isoDay(close);
+  return !!close && schoolDateKey() >= storedDateKey(close);
 }
 
 export default function EnrollmentConfiguration() {
@@ -22,6 +21,7 @@ export default function EnrollmentConfiguration() {
   const [me, setMe] = useState<any>();
   const [yearId, setYearId] = useState('');
   const [cloneSourceId, setCloneSourceId] = useState('');
+  const [newYearStartDate, setNewYearStartDate] = useState('');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
@@ -65,14 +65,14 @@ export default function EnrollmentConfiguration() {
           name: String(f.get('name') || '').toUpperCase(),
           startDate: f.get('startDate'),
           endDate: f.get('endDate'),
-          enrollmentCloseDate: f.get('enrollmentCloseDate') || undefined,
           contributionAmount: Number(f.get('contributionAmount') || 0),
           active: f.get('active') === 'on',
         }),
       });
-      setMsg(`Año escolar ${y.name} creado`);
+      setMsg(`Año escolar ${y.name} creado · Cierre automático de matrícula: ${dateLabel(y.enrollmentCloseDate)}`);
       setErr('');
       e.currentTarget.reset();
+      setNewYearStartDate('');
       await load(y.id);
     } catch (e: any) { setErr(e.message); }
   }
@@ -156,15 +156,6 @@ export default function EnrollmentConfiguration() {
     } catch (e: any) { setErr(e.message); }
   }
 
-  async function lockRoster(sectionId: string) {
-    if (!confirm('¿Fijar la nómina al cierre? Los números actuales se conservarán y toda inscripción o reinscripción posterior quedará al final.')) return;
-    try {
-      await api(`/enrollments/roster/${sectionId}/lock`, { method: 'POST' });
-      setMsg('Nómina fijada. Los números ocupados ya no se modificarán y las nuevas matrículas quedarán al final.');
-      setErr('');
-      setSections(await api(`/academic/sections?academicYearId=${yearId}`));
-    } catch (e: any) { setErr(e.message); }
-  }
 
   async function inactivateYear(id: string, name: string) {
     if (!confirm(`¿Pasar las matrículas activas de ${name} a condición INACTIVO? La definitiva académica se conservará separadamente.`)) return;
@@ -178,20 +169,21 @@ export default function EnrollmentConfiguration() {
 
   return <Shell title="Configuración de matrícula">
     <div className="page-heading">
-      <div><span className="eyebrow">Administración anual</span><h1>Años escolares y secciones</h1><p>Configure el período destino antes de iniciar reinscripciones. Los nombres de las secciones se administran desde un catálogo central.</p></div>
+      <div><span className="eyebrow">Administración anual</span><h1>Años escolares y secciones</h1><p>Configure el período destino antes de iniciar reinscripciones. El cierre de matrícula es automático cada 31 de octubre; los nombres de las secciones se administran desde un catálogo central.</p></div>
       <Link className="btn secondary" href="/enrollments"><ArrowLeft size={17}/> Volver</Link>
     </div>
     {msg && <div className="success-banner">{msg}</div>}
     {err && <div className="alert">{err}</div>}
+    <div className="info-banner" style={{marginBottom:16}}><div><strong>CIERRE DE MATRÍCULA AUTOMÁTICO</strong><span>Todos los años escolares cierran el 31 de octubre del año en que comienzan. No requiere activación ni modificación manual.</span></div></div>
 
     <div className="details-grid">
       <form className="card form-section" onSubmit={createYear}>
-        <div className="section-head"><div><h2>Nuevo año escolar</h2><p>Al crearlo se genera su política de calificaciones y los tres lapsos base.</p></div><CalendarPlus size={22}/></div>
+        <div className="section-head"><div><h2>Nuevo año escolar</h2><p>Al crearlo se genera su política de calificaciones, los tres lapsos base y el cierre automático de matrícula para el 31 de octubre del año de inicio.</p></div><CalendarPlus size={22}/></div>
         <div className="form-grid">
           <div className="span-2"><label>Nombre *</label><input className="input uppercase" name="name" placeholder="2027-2028" onInput={toUpperInput} required/></div>
-          <div><label>Inicio *</label><input className="input" type="date" name="startDate" required/></div>
+          <div><label>Inicio *</label><input className="input" type="date" name="startDate" value={newYearStartDate} onChange={e=>setNewYearStartDate(e.target.value)} required/></div>
           <div><label>Culminación *</label><input className="input" type="date" name="endDate" required/></div>
-          <div><label>Cierre de matrícula</label><input className="input" type="date" name="enrollmentCloseDate"/></div>
+          <div><label>Cierre de matrícula</label><input className="input" value={`${automaticCloseLabelFromStart(newYearStartDate)} · AUTOMÁTICO`} readOnly aria-readonly="true"/><small className="muted">Regla institucional fija: último día de octubre.</small></div>
           <div><label>Aporte de inscripción</label><input className="input" type="number" name="contributionAmount" min="0" step="0.01" defaultValue="0" required/></div>
           <label className="check-card span-2"><input type="checkbox" name="active"/><span><strong>Activar al crear</strong><small>Desactiva el período activo anterior.</small></span></label>
         </div>
@@ -200,7 +192,7 @@ export default function EnrollmentConfiguration() {
 
       <section className="card form-section">
         <div className="section-head"><div><h2>Períodos existentes</h2><p>Solo un año escolar debe estar activo.</p></div></div>
-        <div className="mini-list">{years.map(y => <div key={y.id}><div><strong>{y.name}</strong><small>{new Date(y.startDate).toLocaleDateString('es-VE')} – {new Date(y.endDate).toLocaleDateString('es-VE')} · {y._count?.enrollments || 0} matrícula(s)</small></div><div className="row-actions">{y.active ? <span className="status ok">ACTIVO</span> : <><button className="btn secondary" onClick={() => activate(y.id)}><Power size={14}/> Activar</button>{(y._count?.enrollments || 0) > 0 && <button className="btn secondary" onClick={() => inactivateYear(y.id, y.name)}>Pasar a Inactivo</button>}</>}</div></div>)}</div>
+        <div className="mini-list">{years.map(y => <div key={y.id}><div><strong>{y.name}</strong><small>{dateLabel(y.startDate)} – {dateLabel(y.endDate)} · Cierre automático {dateLabel(y.enrollmentCloseDate)} · {y._count?.enrollments || 0} matrícula(s)</small></div><div className="row-actions">{y.active ? <span className="status ok">ACTIVO</span> : <><button className="btn secondary" onClick={() => activate(y.id)}><Power size={14}/> Activar</button>{(y._count?.enrollments || 0) > 0 && <button className="btn secondary" onClick={() => inactivateYear(y.id, y.name)}>Pasar a Inactivo</button>}</>}</div></div>)}</div>
       </section>
     </div>
 
@@ -235,7 +227,7 @@ export default function EnrollmentConfiguration() {
         <button className="btn" disabled={activeSectionNames.length===0}>Crear sección</button>
       </form>
 
-      <section className="card"><h3>Secciones configuradas</h3><p className="muted">Antes del cierre, el número es provisional y se determina por cédula. Desde la fecha de cierre la numeración queda fija; toda matrícula posterior recibe el siguiente número al final.</p><div className="table-wrap"><table><thead><tr><th>Plan</th><th>Grado</th><th>Sección</th><th>Turno</th><th>Matrículas</th><th>Nómina</th></tr></thead><tbody>{sections.length === 0 ? <tr><td colSpan={6}>No hay secciones configuradas.</td></tr> : sections.map(s => <tr key={s.id}><td>{s.studyPlan.code}</td><td>{s.gradeLevel}°</td><td>{s.name}</td><td>{s.shift || '—'}</td><td>{s._count?.enrollments || 0}</td><td>{s.rosterLockedAt ? <span className="status ok">FIJA</span> : !s.academicYear?.enrollmentCloseDate ? <span className="status neutral">SIN CIERRE DEFINIDO</span> : closeReached(s) ? <button className="btn secondary mini-btn" onClick={() => lockRoster(s.id)}>Fijar nómina</button> : <span className="status warn">PROVISIONAL HASTA {dateLabel(s.academicYear.enrollmentCloseDate)}</span>}</td></tr>)}</tbody></table></div></section>
+      <section className="card"><h3>Secciones configuradas</h3><p className="muted">Antes del 31 de octubre, el número es provisional y se determina por cédula. Desde el 31 de octubre inclusive la numeración queda fija automáticamente; toda matrícula posterior recibe el siguiente número al final.</p><div className="table-wrap"><table><thead><tr><th>Plan</th><th>Grado</th><th>Sección</th><th>Turno</th><th>Matrículas</th><th>Nómina</th></tr></thead><tbody>{sections.length === 0 ? <tr><td colSpan={6}>No hay secciones configuradas.</td></tr> : sections.map(s => <tr key={s.id}><td>{s.studyPlan.code}</td><td>{s.gradeLevel}°</td><td>{s.name}</td><td>{s.shift || '—'}</td><td>{s._count?.enrollments || 0}</td><td>{s.rosterLockedAt ? <span className="status ok">FIJA</span> : closeReached(s) ? <span className="status ok">FIJA AUTOMÁTICA</span> : <span className="status warn">PROVISIONAL HASTA {dateLabel(s.academicYear.enrollmentCloseDate)}</span>}</td></tr>)}</tbody></table></div></section>
     </div>
   </Shell>;
 }

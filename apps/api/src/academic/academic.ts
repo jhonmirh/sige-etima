@@ -3,6 +3,8 @@ import { IsBoolean, IsDateString, IsInt, IsNumber, IsOptional, IsString, Matches
 import { Role } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { JwtAuthGuard, Roles, RolesGuard } from '../common/security';
+import { automaticEnrollmentCloseDate } from '../common/school-calendar';
+import { EnrollmentService } from '../enrollment/enrollment';
 
 const SECTION_NAME = /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]+$/u;
 
@@ -36,7 +38,6 @@ class AcademicYearDto {
   @IsString() name!: string;
   @IsDateString() startDate!: string;
   @IsDateString() endDate!: string;
-  @IsOptional() @IsDateString() enrollmentCloseDate?: string;
   @IsNumber() @Min(0) contributionAmount!: number;
   @IsOptional() @IsBoolean() active?: boolean;
 }
@@ -45,9 +46,22 @@ class CloneSectionsDto { @IsString() sourceAcademicYearId!: string; }
 
 @Injectable()
 export class AcademicService {
-  constructor(private db: PrismaService) {}
+  constructor(private db: PrismaService, private enrollmentService: EnrollmentService) {}
 
-  years() {
+  private async ensureAutomaticCloseDates() {
+    const rows = await this.db.academicYear.findMany({ select: { id: true, startDate: true, enrollmentCloseDate: true } });
+    for (const row of rows) {
+      const expected = automaticEnrollmentCloseDate(row.startDate);
+      if (!row.enrollmentCloseDate || row.enrollmentCloseDate.getTime() !== expected.getTime()) {
+        await this.db.academicYear.update({ where: { id: row.id }, data: { enrollmentCloseDate: expected } });
+      }
+    }
+  }
+
+  async years() {
+    // Regla institucional permanente: cada período cierra matrícula el 31 de octubre
+    // del año en que comienza. También normaliza períodos creados en versiones anteriores.
+    await this.ensureAutomaticCloseDates();
     return this.db.academicYear.findMany({
       orderBy: { startDate: 'desc' },
       include: { gradingPolicy: true, _count: { select: { sections: true, enrollments: true } } },
@@ -62,7 +76,19 @@ export class AcademicService {
     });
   }
 
-  sections(year?: string, studyPlanId?: string, gradeLevel?: number) {
+  async sections(year?: string, studyPlanId?: string, gradeLevel?: number) {
+    if (year) {
+      const current = await this.db.academicYear.findUnique({ where: { id: year }, select: { id: true, startDate: true, enrollmentCloseDate: true } });
+      if (current) {
+        const expected = automaticEnrollmentCloseDate(current.startDate);
+        if (!current.enrollmentCloseDate || current.enrollmentCloseDate.getTime() !== expected.getTime()) {
+          await this.db.academicYear.update({ where: { id: current.id }, data: { enrollmentCloseDate: expected } });
+        }
+        // Al consultar las secciones después del 31/10, la nómina se materializa
+        // automáticamente sin botón ni intervención del usuario.
+        await this.enrollmentService.ensureYearRostersLockedIfDue(year, new Date());
+      }
+    }
     return this.db.section.findMany({
       where: { academicYearId: year, studyPlanId, gradeLevel },
       include: { academicYear: true, studyPlan: true, _count: { select: { enrollments: true } } },
@@ -103,9 +129,9 @@ export class AcademicService {
   async createYear(d: AcademicYearDto) {
     const start = new Date(d.startDate);
     const end = new Date(d.endDate);
-    const close = d.enrollmentCloseDate ? new Date(d.enrollmentCloseDate) : null;
+    const close = automaticEnrollmentCloseDate(start);
     if (end <= start) throw new BadRequestException('La fecha de culminación debe ser posterior a la fecha de inicio');
-    if (close && (close < start || close > end)) throw new BadRequestException('La fecha de cierre de matrícula debe estar dentro del año escolar');
+    if (close < start || close > end) throw new BadRequestException('El año escolar debe incluir el 31 de octubre, fecha institucional automática de cierre de matrícula');
     const normalizedName = d.name.trim().toUpperCase();
     const exists = await this.db.academicYear.findUnique({ where: { name: normalizedName } });
     if (exists) throw new BadRequestException('Ya existe un año escolar con este nombre');

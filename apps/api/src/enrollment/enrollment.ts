@@ -34,6 +34,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { JwtAuthGuard, Roles, RolesGuard } from '../common/security';
+import { automaticEnrollmentCloseDate, parseSchoolCalendarDate } from '../common/school-calendar';
 import { deriveAcademicDecision } from './enrollment.rules';
 
 const PHONE_REGEX=/^\d{10,15}$/;
@@ -102,7 +103,8 @@ export class EnrollmentService{
   }
 
   private isOnOrAfterEnrollmentClose(year:any,date:Date){
-    return !!year.enrollmentCloseDate && date.getTime()>=new Date(year.enrollmentCloseDate).getTime();
+    const close=automaticEnrollmentCloseDate(year.startDate);
+    return date.getTime()>=close.getTime();
   }
 
   private isLateOrLocked(section:any,year:any,date:Date){
@@ -249,7 +251,7 @@ export class EnrollmentService{
     if(existing) throw new ConflictException('El estudiante ya posee matrícula en este año escolar');
     const planSubjects=await this.db.studyPlanSubject.findMany({where:{studyPlanId:d.studyPlanId,gradeLevel:d.gradeLevel,active:true}});
     if(!planSubjects.length) throw new BadRequestException('El plan seleccionado no tiene materias configuradas para este grado');
-    const date=d.registrationDate?new Date(d.registrationDate):new Date();
+    const date=parseSchoolCalendarDate(d.registrationDate);
     if(!section.rosterLockedAt && this.isOnOrAfterEnrollmentClose(year,date)){
       await this.lockRoster(section.id,date);
       section.rosterLockedAt=new Date();
@@ -289,7 +291,7 @@ export class EnrollmentService{
     if(section.academicYearId!==d.targetAcademicYearId || section.studyPlanId!==previous.studyPlanId || section.gradeLevel!==outcome.decision.targetGradeLevel) throw new BadRequestException('La sección seleccionada no corresponde al año, plan o grado calculado por la definitiva');
     const subjects=await this.subjectsForNext(previous,outcome);
     if(!subjects.length) throw new BadRequestException('No existen materias a cursar según la definitiva del año anterior');
-    const date=d.registrationDate?new Date(d.registrationDate):new Date();
+    const date=parseSchoolCalendarDate(d.registrationDate);
     if(!section.rosterLockedAt && this.isOnOrAfterEnrollmentClose(targetYear,date)){
       await this.lockRoster(section.id,date);
       section.rosterLockedAt=new Date();
@@ -356,8 +358,7 @@ export class EnrollmentService{
   async lockRoster(sectionId:string,effectiveDate:Date=new Date()){
     const section=await this.db.section.findUniqueOrThrow({where:{id:sectionId},include:{academicYear:true}});
     if(section.rosterLockedAt) return this.roster(sectionId,false);
-    const close=section.academicYear.enrollmentCloseDate?new Date(section.academicYear.enrollmentCloseDate):null;
-    if(!close) throw new BadRequestException('El año escolar no tiene definida una fecha de cierre de matrícula');
+    const close=automaticEnrollmentCloseDate(section.academicYear.startDate);
     if(effectiveDate.getTime()<close.getTime()){
       throw new BadRequestException(`La nómina permanece provisional hasta la fecha de cierre de matrícula ${close.toLocaleDateString('es-VE')}`);
     }
@@ -379,9 +380,11 @@ export class EnrollmentService{
     return this.roster(sectionId,false);
   }
 
-  private async ensureYearRostersLockedIfDue(yearId:string,effectiveDate:Date=new Date()){
+  async ensureYearRostersLockedIfDue(yearId:string,effectiveDate:Date=new Date()){
     const year=await this.db.academicYear.findUnique({where:{id:yearId}});
-    if(!year?.enrollmentCloseDate || effectiveDate.getTime()<new Date(year.enrollmentCloseDate).getTime()) return;
+    if(!year) return;
+    const close=automaticEnrollmentCloseDate(year.startDate);
+    if(effectiveDate.getTime()<close.getTime()) return;
     const sections=await this.db.section.findMany({where:{academicYearId:yearId,rosterLockedAt:null},select:{id:true}});
     for(const section of sections) await this.lockRoster(section.id,effectiveDate);
   }
