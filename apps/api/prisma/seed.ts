@@ -6,12 +6,99 @@ const states = [
   'Amazonas','Anzoátegui','Apure','Aragua','Barinas','Bolívar','Carabobo','Cojedes','Delta Amacuro','Distrito Capital','Falcón','Guárico','Lara','La Guaira','Mérida','Miranda','Monagas','Nueva Esparta','Portuguesa','Sucre','Táchira','Trujillo','Yaracuy','Zulia'
 ];
 
+const ARCGIS_GEOGRAPHY_URL = 'https://venezuela360.org/server/rest/services/Hosted/Parroquias/FeatureServer/0/query?where=1%3D1&outFields=estado%2Cmunicipio%2Cparroquia&returnGeometry=false&resultRecordCount=2000&f=json';
+const GITHUB_GEOGRAPHY_URL = 'https://raw.githubusercontent.com/zokeber/venezuela-json/refs/heads/master/venezuela.json';
+
+type GeographyRow = { state: string; municipality: string; parish: string };
+
+function key(value:string){
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toUpperCase();
+}
+
+function cleanName(value:string){
+  return value.trim().replace(/\s+/g,' ').replace(/[.]+$/,'').toLocaleUpperCase('es-VE');
+}
+
+function canonicalState(value:string){
+  const aliases:Record<string,string> = { VARGAS: 'La Guaira' };
+  const normalized=key(value);
+  if(aliases[normalized]) return aliases[normalized];
+  return states.find((x)=>key(x)===normalized) || value.trim();
+}
+
+async function fetchGeographyRows():Promise<GeographyRow[]>{
+  try{
+    const response=await fetch(ARCGIS_GEOGRAPHY_URL,{signal:AbortSignal.timeout(20000)});
+    if(!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data:any=await response.json();
+    const rows=(data.features||[]).map((f:any)=>({
+      state:String(f.attributes?.estado||''),
+      municipality:String(f.attributes?.municipio||''),
+      parish:String(f.attributes?.parroquia||''),
+    })).filter((r:GeographyRow)=>r.state&&r.municipality&&r.parish);
+    if(rows.length) return rows;
+  }catch(error:any){
+    console.warn(`No fue posible leer Venezuela360: ${error?.message||error}`);
+  }
+
+  const response=await fetch(GITHUB_GEOGRAPHY_URL,{signal:AbortSignal.timeout(20000)});
+  if(!response.ok) throw new Error(`No fue posible descargar catálogo territorial de respaldo: HTTP ${response.status}`);
+  const data:any[]=await response.json();
+  return data.flatMap((state:any)=>(state.municipios||[]).flatMap((municipality:any)=>(municipality.parroquias||[]).map((parish:string)=>({
+    state:String(state.estado||''), municipality:String(municipality.municipio||''), parish:String(parish||'')
+  })))).filter((r:GeographyRow)=>r.state&&r.municipality&&r.parish);
+}
+
+async function seedGeography(){
+  const [municipalityCount,parishCount]=await Promise.all([db.municipality.count(),db.parish.count()]);
+  if(municipalityCount>=300 && parishCount>=800){
+    console.log(`Catálogo territorial disponible: ${municipalityCount} municipios / ${parishCount} parroquias`);
+    return;
+  }
+
+  try{
+    const rows=await fetchGeographyRows();
+    const grouped=new Map<string,Map<string,Set<string>>>();
+    for(const row of rows){
+      const stateName=canonicalState(row.state);
+      const municipalityName=cleanName(row.municipality);
+      const parishName=cleanName(row.parish);
+      if(!states.some((x)=>key(x)===key(stateName)) || !municipalityName || !parishName) continue;
+      if(!grouped.has(stateName)) grouped.set(stateName,new Map());
+      const municipalities=grouped.get(stateName)!;
+      if(!municipalities.has(municipalityName)) municipalities.set(municipalityName,new Set());
+      municipalities.get(municipalityName)!.add(parishName);
+    }
+
+    for(const stateName of states){
+      const state=await db.federalState.upsert({where:{name:stateName},update:{},create:{name:stateName}});
+      const municipalities=grouped.get(stateName);
+      if(!municipalities) continue;
+      for(const [municipalityName,parishes] of municipalities){
+        const municipality=await db.municipality.upsert({
+          where:{stateId_name:{stateId:state.id,name:municipalityName}},
+          update:{},create:{stateId:state.id,name:municipalityName}
+        });
+        await db.parish.createMany({
+          data:[...parishes].map((name)=>({municipalityId:municipality.id,name})),
+          skipDuplicates:true,
+        });
+      }
+    }
+    const [m,p]=await Promise.all([db.municipality.count(),db.parish.count()]);
+    console.log(`Catálogo territorial cargado: ${m} municipios / ${p} parroquias`);
+  }catch(error:any){
+    console.warn(`ADVERTENCIA: no se pudo completar el catálogo territorial: ${error?.message||error}`);
+  }
+}
+
 async function subject(code:string,name:string,gradingType:GradingType=GradingType.NUMERIC){
   return db.subject.upsert({where:{code},update:{name,gradingType},create:{code,name,gradingType}});
 }
 
 async function main(){
   for (const name of states) await db.federalState.upsert({where:{name},update:{},create:{name}});
+  await seedGeography();
 
   const adminEmail=process.env.SEED_ADMIN_EMAIL || 'admin@etima.local';
   const adminPassword=process.env.SEED_ADMIN_PASSWORD || 'ChangeMe123!';

@@ -1,5 +1,7 @@
 # SIGE-ETIMA — Sistema Integral de Gestión Escolar
 
+**Versión de trabajo: V2.0.1 — Fase 1 Estudiantes + Representantes**
+
 Sistema web para la Escuela Técnica Isaías Medina Angarita, construido como monorepo:
 
 - **Frontend:** Next.js + TypeScript (App Router), UI responsive, azul marino, modo claro/oscuro.
@@ -7,22 +9,18 @@ Sistema web para la Escuela Técnica Isaías Medina Angarita, construido como mo
 - **Base de datos:** PostgreSQL + Prisma ORM.
 - **Infraestructura local:** Docker Compose.
 
-## Cobertura funcional
+## Estado funcional actual
 
-1. Matrícula y ficha integral del estudiante.
-2. Representantes, relaciones estudiante-representante, referencias de emergencia y aportes de inscripción.
-3. Datos antropométricos por año escolar.
-4. Documentos consignados y observaciones.
-5. Docentes/personal, cargos, títulos y datos laborales/bancarios.
-6. Años escolares, secciones con nombres de próceres y numeración de lista estable.
-7. Planes de estudio parametrizables 31059 (Media General) y 41049 (Media Técnica).
-8. Asignaciones docentes, lapsos, evaluaciones, primera/segunda forma, inasistencia, revisión y materia pendiente.
-9. Grupos de participación/estables para Media General, incluso entre estudiantes de grados/secciones distintos.
-10. Retiros sin romper la numeración histórica de la nómina.
-11. Condiciones: Regular, Materia Pendiente, Repitiente, Retirado, Retirado Modificado, Graduado e Inactivo.
-12. Dashboard y reportes exportables.
-13. Constancias de estudio y de trabajo en PDF.
-14. Auditoría de operaciones sensibles.
+- **Fase 1 — Estudiantes + Representantes:** desarrollada de extremo a extremo en V2.0.1.
+- **Matrícula:** base funcional, pendiente de completar todos los flujos administrativos.
+- **Personal:** consulta/backend base; pendiente de completar toda la operación visual.
+- **Notas, materia pendiente y revisión:** motor/base parcial; UI operativa completa pendiente.
+- **Planes de estudio:** datos y modelo parametrizable; administración visual completa pendiente.
+- **Grupos estables:** base funcional parcial.
+- **Centro de reportes:** servicios iniciales; catálogo completo de reportes/filtros pendiente.
+- **Institución, usuarios y auditoría:** base disponible; administración visual ampliada pendiente.
+
+La matriz detallada se mantiene en `docs/04-matriz-cobertura.md` y los cambios de esta fase en `docs/09-fase1-estudiantes-representantes.md`.
 
 ## Inicio rápido
 

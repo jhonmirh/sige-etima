@@ -21,6 +21,13 @@ enum Sex {
   MASCULINO
   FEMENINO
 }
+enum MaritalStatus {
+  SOLTERO
+  CASADO
+  VIUDO
+  DIVORCIADO
+  UNION_ESTABLE
+}
 enum LivingWith {
   MADRE
   PADRE
@@ -167,7 +174,8 @@ model FederalState {
   id String @id @default(uuid())
   name String @unique
   municipalities Municipality[]
-  studentsBorn Student[]
+  studentsBorn Student[] @relation("StudentBirthState")
+  studentsResident Student[] @relation("StudentResidenceState")
 }
 model Municipality {
   id String @id @default(uuid())
@@ -175,6 +183,8 @@ model Municipality {
   state FederalState @relation(fields:[stateId], references:[id], onDelete:Cascade)
   name String
   parishes Parish[]
+  studentsBorn Student[] @relation("StudentBirthMunicipality")
+  studentsResident Student[] @relation("StudentResidenceMunicipality")
   @@unique([stateId,name])
 }
 model Parish {
@@ -182,6 +192,8 @@ model Parish {
   municipalityId String
   municipality Municipality @relation(fields:[municipalityId], references:[id], onDelete:Cascade)
   name String
+  studentsBorn Student[] @relation("StudentBirthParish")
+  studentsResident Student[] @relation("StudentResidenceParish")
   @@unique([municipalityId,name])
 }
 
@@ -219,21 +231,33 @@ model GradingPolicy {
 
 model Student {
   id String @id @default(uuid())
+  active Boolean @default(true)
   nationality Nationality
-  identityNumber String?
-  schoolIdentityNumber String?
+  identityNumber String? @unique
+  schoolIdentityNumber String? @unique
   firstName String
   middleName String?
   lastName String
   secondLastName String?
   sex Sex
+  maritalStatus MaritalStatus?
   phone String?
   email String?
   birthPlace String
   birthStateId String?
-  birthState FederalState? @relation(fields:[birthStateId], references:[id])
+  birthState FederalState? @relation("StudentBirthState", fields:[birthStateId], references:[id])
+  birthMunicipalityId String?
+  birthMunicipality Municipality? @relation("StudentBirthMunicipality", fields:[birthMunicipalityId], references:[id])
+  birthParishId String?
+  birthParish Parish? @relation("StudentBirthParish", fields:[birthParishId], references:[id])
   birthDate DateTime
   address String
+  residenceStateId String?
+  residenceState FederalState? @relation("StudentResidenceState", fields:[residenceStateId], references:[id])
+  residenceMunicipalityId String?
+  residenceMunicipality Municipality? @relation("StudentResidenceMunicipality", fields:[residenceMunicipalityId], references:[id])
+  residenceParishId String?
+  residenceParish Parish? @relation("StudentResidenceParish", fields:[residenceParishId], references:[id])
   motherName String?
   fatherName String?
   motherIdentity String?
@@ -243,9 +267,11 @@ model Student {
   livingWith LivingWith
   bloodType String?
   disability Boolean @default(false)
+  disabilityDetails String?
   medicalReport Boolean @default(false)
   allergy Boolean @default(false)
   allergyDetails String?
+  originSchool String?
   destinationSchool String?
   observations String?
   enrollments Enrollment[]
@@ -256,12 +282,14 @@ model Student {
   stableGroupMemberships StableGroupMembership[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  @@index([lastName, firstName])
+  @@index([active, lastName, firstName])
   @@index([identityNumber])
+  @@index([schoolIdentityNumber])
 }
 
 model Representative {
   id String @id @default(uuid())
+  active Boolean @default(true)
   nationality Nationality
   identityNumber String @unique
   firstName String
@@ -306,10 +334,15 @@ model EmergencyContact {
   studentId String
   student Student @relation(fields:[studentId], references:[id], onDelete:Cascade)
   firstName String
+  middleName String?
   lastName String
+  secondLastName String?
   identityNumber String?
   phone String
   address String?
+  notes String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model AnthropometricRecord {
@@ -334,7 +367,11 @@ model StudentDocument {
   type DocumentType
   presented Boolean @default(false)
   filePath String?
+  originalName String?
+  mimeType String?
+  sizeBytes Int?
   notes String?
+  uploadedAt DateTime?
   updatedAt DateTime @updatedAt
   @@unique([studentId, academicYearId, type])
 }
