@@ -168,6 +168,15 @@ async function main(){
   await db.gradingPolicy.upsert({where:{academicYearId:year.id},update:{},create:{academicYearId:year.id}});
   for(let n=1;n<=3;n++) await db.pedagogicalLapse.upsert({where:{academicYearId_number:{academicYearId:year.id,number:n}},update:{},create:{academicYearId:year.id,number:n,startDate:new Date(2026,9+(n-1)*3,1),endDate:new Date(2026,11+(n-1)*3,20)}});
 
+  // Conserva como catálogo administrativo los nombres de secciones que ya existan en años anteriores.
+  // Si un nombre fue inactivado por el Administrador, el seed no lo reactiva.
+  const existingSectionNames=await db.section.findMany({select:{name:true},distinct:['name']});
+  for(const row of existingSectionNames){
+    const name=row.name.trim().replace(/\s+/g,' ').toLocaleUpperCase('es-VE');
+    const catalog=await db.sectionName.findUnique({where:{name}});
+    if(!catalog) await db.sectionName.create({data:{name}});
+  }
+
   await db.institution.upsert({
     where:{id:'00000000-0000-0000-0000-000000000001'},
     update:{},

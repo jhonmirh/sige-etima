@@ -46,3 +46,15 @@ Se toman de `SEED_ADMIN_EMAIL` y `SEED_ADMIN_PASSWORD`. Cámbielas inmediatament
 La narrativa define con mucho detalle oportunidades, formas y condiciones, pero **no especifica una fórmula única para promediar las 2–5 evaluaciones de cada lapso ni el umbral cuantitativo general de aprobación**. Por eso el sistema deja estos parámetros configurables (`GradingPolicy`). El seed usa 10/20 como valor inicial operativo, que debe ser validado por la institución antes de producción.
 
 Consulte `docs/` para arquitectura, modelo de datos, operación, reglas académicas, API y matriz de cobertura.
+
+## V2.0.3 — Matrícula / Reinscripción
+Se incorporó el flujo anual completo de primera matrícula y reinscripción, cálculo de propuesta desde Definitiva, materias activas por matrícula, repitencia parcial (solo materias reprobadas), materia pendiente con cuatro oportunidades, administración de años/secciones y cierre de nómina con número fijo.
+
+Rutas principales:
+- `/enrollments`
+- `/enrollments/new`
+- `/enrollments/reenroll`
+- `/enrollments/configuration`
+- `/enrollments/[id]`
+
+Ver `docs/10-fase2-matricula-reinscripcion.md`.

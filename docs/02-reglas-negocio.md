@@ -38,3 +38,11 @@ Conversión automática de la nota cuantitativa anual:
 
 ## Regla pendiente de validación institucional
 La narrativa no fija una fórmula matemática única para promediar las 2–5 evaluaciones de un lapso, ni declara expresamente el umbral general de aprobación. La implementación usa ponderaciones configurables y un umbral inicial 10/20, ambos modificables por año escolar.
+
+## Regla cerrada V2.0.3 — promoción y reinscripción
+- 0 materias reprobadas: REGULAR, promoción al siguiente grado, plan completo del nuevo grado.
+- Hasta 2 reprobadas: MATERIA PENDIENTE, promoción al siguiente grado, plan completo nuevo + pendientes del año anterior.
+- Más de 2 reprobadas: REPITIENTE, permanece en el mismo grado y cursa únicamente las materias reprobadas.
+- La fuente de esta condición es la Definitiva Anual del módulo de Notas.
+- Secretaría no puede modificar ordinariamente la condición calculada; solo ADMIN/DIRECTOR disponen de corrección excepcional auditada.
+- El número de lista se fija al cerrar la nómina. Retiros y altas posteriores no renumeran estudiantes existentes.

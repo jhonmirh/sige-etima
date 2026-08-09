@@ -115,6 +115,11 @@ enum WithdrawalType {
   PRIMEROS_30_DIAS
   RESTO_ANO
 }
+enum EnrollmentSubjectOrigin {
+  PLAN_ACTUAL
+  MATERIA_PENDIENTE
+  REPITENCIA
+}
 
 model User {
   id               String   @id @default(uuid())
@@ -415,7 +420,16 @@ model StudyPlanSubject {
   teacherAssignments TeacherAssignment[]
   annualResults AnnualSubjectResult[]
   pendingSubjects PendingSubject[]
+  enrollmentSubjects EnrollmentSubject[]
   @@unique([studyPlanId, subjectId, gradeLevel])
+}
+
+model SectionName {
+  id String @id @default(uuid())
+  name String @unique
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Section {
@@ -428,6 +442,7 @@ model Section {
   name String
   shift String?
   capacity Int?
+  rosterLockedAt DateTime?
   enrollments Enrollment[]
   teacherAssignments TeacherAssignment[]
   @@unique([academicYearId, studyPlanId, gradeLevel, name])
@@ -449,18 +464,40 @@ model Enrollment {
   literal String?
   listNumber Int?
   condition StudentCondition @default(REGULAR)
+  academicCondition StudentCondition?
   isLateEnrollment Boolean @default(false)
   notes String?
+  previousEnrollmentId String? @unique
+  previousEnrollment Enrollment? @relation("EnrollmentProgression", fields:[previousEnrollmentId], references:[id], onDelete:SetNull)
+  nextEnrollment Enrollment? @relation("EnrollmentProgression")
+  academicOutcomeFinalizedAt DateTime?
   anthropometrics AnthropometricRecord[]
   withdrawal Withdrawal?
   attempts AssessmentAttempt[]
   lapseGrades LapseGrade[]
   annualResults AnnualSubjectResult[]
   pendingSubjects PendingSubject[]
+  curriculumSubjects EnrollmentSubject[] @relation("EnrollmentCurriculum")
+  sourceCurriculumSubjects EnrollmentSubject[] @relation("EnrollmentCurriculumSource")
   stableGroups StableGroupMembership[]
   @@unique([studentId, academicYearId])
   @@unique([sectionId, listNumber])
   @@index([academicYearId, gradeLevel, condition])
+}
+
+model EnrollmentSubject {
+  id String @id @default(uuid())
+  enrollmentId String
+  enrollment Enrollment @relation("EnrollmentCurriculum", fields:[enrollmentId], references:[id], onDelete:Cascade)
+  studyPlanSubjectId String
+  studyPlanSubject StudyPlanSubject @relation(fields:[studyPlanSubjectId], references:[id])
+  origin EnrollmentSubjectOrigin @default(PLAN_ACTUAL)
+  sourceEnrollmentId String?
+  sourceEnrollment Enrollment? @relation("EnrollmentCurriculumSource", fields:[sourceEnrollmentId], references:[id], onDelete:SetNull)
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  @@unique([enrollmentId, studyPlanSubjectId])
+  @@index([enrollmentId, origin, active])
 }
 
 model Withdrawal {

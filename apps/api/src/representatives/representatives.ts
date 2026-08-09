@@ -20,10 +20,12 @@ import {
   IsEnum,
   IsIn,
   IsNumber,
+  IsNotEmpty,
   IsOptional,
   IsString,
   Matches,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { PrismaService } from '../prisma.service';
 import { JwtAuthGuard, Roles, RolesGuard } from '../common/security';
@@ -68,7 +70,10 @@ export class LinkRepresentativeDto {
   @IsEnum(RelationshipType) relationship!: RelationshipType;
   @IsBoolean() isPrimary!: boolean;
   @IsBoolean() livesWithStudent!: boolean;
-  @IsOptional() @IsString() authorizationDescription?: string;
+  @ValidateIf((o) => o.relationship === RelationshipType.AUTORIZADO || o.relationship === RelationshipType.OTRO)
+  @IsString()
+  @IsNotEmpty({ message: 'La descripción es obligatoria cuando el parentesco es AUTORIZADO u OTRO' })
+  authorizationDescription?: string;
 }
 
 export class ContributionDto {
@@ -166,11 +171,23 @@ export class RepresentativesService {
     if (!representative?.active) throw new BadRequestException('El representante no existe o está inactivo');
     if (!student?.active) throw new BadRequestException('El estudiante no existe o está inactivo');
 
+    const rawAuthorization = d.authorizationDescription?.trim();
+    const requiresDescription = d.relationship === RelationshipType.AUTORIZADO || d.relationship === RelationshipType.OTRO;
+    if (requiresDescription && !rawAuthorization) {
+      throw new BadRequestException(
+        d.relationship === RelationshipType.OTRO
+          ? 'La descripción es obligatoria cuando el parentesco es OTRO'
+          : 'Debe indicar la descripción de autorización cuando el representante es AUTORIZADO',
+      );
+    }
+
     return this.db.$transaction(async (tx) => {
       if (d.isPrimary) {
         await tx.studentRepresentative.updateMany({ where: { studentId: d.studentId }, data: { isPrimary: false } });
       }
-      const authorizationDescription = d.authorizationDescription?.trim().toLocaleUpperCase('es-VE') || null;
+      const authorizationDescription = requiresDescription
+        ? rawAuthorization!.toLocaleUpperCase('es-VE')
+        : null;
       return tx.studentRepresentative.upsert({
         where: { studentId_representativeId: { studentId: d.studentId, representativeId: id } },
         update: {

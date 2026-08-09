@@ -29,6 +29,7 @@ export default function RepresentativeForm({ mode, representative, studentId }: 
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [relationship, setRelationship] = useState('MADRE');
   const d = representative || {};
 
   async function submit(e: FormEvent<HTMLFormElement>) {
@@ -37,6 +38,14 @@ export default function RepresentativeForm({ mode, representative, studentId }: 
     setError('');
     try {
       const data = payload(e.currentTarget);
+      const requiresDescription = relationship === 'AUTORIZADO' || relationship === 'OTRO';
+      if (studentId && mode === 'create' && requiresDescription && !String(data.authorizationDescription || '').trim()) {
+        setError(relationship === 'OTRO'
+          ? 'La descripción es obligatoria cuando el parentesco es OTRO'
+          : 'La descripción de autorización es obligatoria cuando el parentesco es AUTORIZADO');
+        setSaving(false);
+        return;
+      }
       const repData = { ...data };
       delete repData.relationship;
       delete repData.isPrimary;
@@ -53,10 +62,10 @@ export default function RepresentativeForm({ mode, representative, studentId }: 
           method: 'POST',
           body: JSON.stringify({
             studentId,
-            relationship: data.relationship || 'AUTORIZADO',
+            relationship,
             isPrimary: data.isPrimary === true,
             livesWithStudent: data.livesWithStudent === true,
-            authorizationDescription: data.authorizationDescription,
+            authorizationDescription: requiresDescription ? data.authorizationDescription : undefined,
           }),
         });
         router.push(`/students/${studentId}?tab=representantes`);
@@ -114,8 +123,8 @@ export default function RepresentativeForm({ mode, representative, studentId }: 
     </div></section>
 
     {studentId && mode === 'create' && <section className="card form-section"><div className="section-head"><div><h2>Relación con el estudiante</h2><p>Al guardar, el representante quedará vinculado automáticamente al estudiante.</p></div><span className="step-pill">04</span></div><div className="form-grid cols-3">
-      <div><label>Parentesco</label><select className="input" name="relationship"><option value="MADRE">MADRE</option><option value="PADRE">PADRE</option><option value="AUTORIZADO">AUTORIZADO</option><option value="OTRO">OTRO</option></select></div>
-      <div><label>Descripción de autorización</label><input className="input uppercase" name="authorizationDescription" onInput={toUpperInput} /></div><div></div>
+      <div><label>Parentesco *</label><select className="input" name="relationship" value={relationship} onChange={(e) => setRelationship(e.target.value)} required><option value="MADRE">MADRE</option><option value="PADRE">PADRE</option><option value="AUTORIZADO">AUTORIZADO</option><option value="OTRO">OTRO</option></select></div>
+      <div className="span-2"><label>Descripción de autorización {relationship === 'AUTORIZADO' || relationship === 'OTRO' ? '*' : ''}</label><input className="input uppercase" name="authorizationDescription" onInput={toUpperInput} placeholder={relationship === 'AUTORIZADO' ? 'INDIQUE QUIÉN AUTORIZA O EL FUNDAMENTO DE LA AUTORIZACIÓN' : relationship === 'OTRO' ? 'DESCRIBA LA RELACIÓN CON EL ESTUDIANTE' : 'NO APLICA'} required={relationship === 'AUTORIZADO' || relationship === 'OTRO'} disabled={relationship !== 'AUTORIZADO' && relationship !== 'OTRO'} />{relationship === 'AUTORIZADO' && <small className="muted">Debe describir la autorización. Sin esta información no se permite crear y vincular al representante.</small>}{relationship === 'OTRO' && <small className="muted">Debe describir de forma específica la relación de esta persona con el estudiante.</small>}</div>
       <label className="check-card"><input type="checkbox" name="isPrimary" defaultChecked /><span><strong>Representante principal</strong><small>Contacto principal del estudiante.</small></span></label>
       <label className="check-card"><input type="checkbox" name="livesWithStudent" /><span><strong>Vive con el estudiante</strong><small>Se refleja en la ficha familiar.</small></span></label>
     </div></section>}

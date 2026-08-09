@@ -7,4 +7,4 @@ RUN npm install
 COPY . .
 RUN npm run prisma:generate -w @sige/api && npm run build -w @sige/api
 EXPOSE 4000
-CMD ["sh", "-c", "cd apps/api && npx prisma db push && npm run prisma:seed && node dist/src/main.js"]
+CMD ["sh", "-c", "cd apps/api && npx prisma db push && npm run prisma:seed && node dist/main.js"]
