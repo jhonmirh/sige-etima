@@ -39,6 +39,11 @@ import { deriveAcademicDecision } from './enrollment.rules';
 
 const PHONE_REGEX=/^\d{10,15}$/;
 const GARMENT_SIZES=['10','11','12','13','14','15','16','S','M','L','XL','2XL','3XL'];
+const ENTRY_LITERALS=['A','B','C','D'];
+const LAST_APPROVED_BY_PLAN:Record<string,string[]>={
+  '31059':['1° AÑO','2° AÑO','3° AÑO','4° AÑO'],
+  '41049':['1° AÑO','2° AÑO','3° AÑO','4° AÑO','5° AÑO'],
+};
 
 class EnrollDto{
   @IsString() studentId!:string;
@@ -48,7 +53,7 @@ class EnrollDto{
   @IsInt() @Min(1) @Max(6) gradeLevel!:number;
   @IsOptional() @IsDateString() registrationDate?:string;
   @IsOptional() @IsString() lastApprovedYear?:string;
-  @IsOptional() @IsString() literal?:string;
+  @IsOptional() @IsIn(ENTRY_LITERALS) literal?:string;
   @IsOptional() @IsInt() @Min(50) @Max(250) heightCm?:number;
   @IsOptional() @IsInt() @Min(10000) @Max(300000) weightGrams?:number;
   @IsOptional() @IsIn(GARMENT_SIZES) shirtSize?:string;
@@ -248,13 +253,18 @@ export class EnrollmentService{
 
   async enroll(d:EnrollDto){
     await this.requireRepresentative(d.studentId);
-    const [year,section,student]=await Promise.all([
+    const [year,section,student,plan]=await Promise.all([
       this.db.academicYear.findUniqueOrThrow({where:{id:d.academicYearId}}),
       this.db.section.findUniqueOrThrow({where:{id:d.sectionId}}),
       this.db.student.findUniqueOrThrow({where:{id:d.studentId}}),
+      this.db.studyPlan.findUniqueOrThrow({where:{id:d.studyPlanId}}),
     ]);
     if(!student.active) throw new BadRequestException('El estudiante está inactivo');
     if(section.academicYearId!==d.academicYearId || section.studyPlanId!==d.studyPlanId || section.gradeLevel!==d.gradeLevel) throw new BadRequestException('Sección incompatible con año, plan o grado');
+    const normalizedLastApproved=this.normalizeUpper(d.lastApprovedYear);
+    const allowedLastApproved=LAST_APPROVED_BY_PLAN[plan.code];
+    if(normalizedLastApproved && allowedLastApproved && !allowedLastApproved.includes(normalizedLastApproved)) throw new BadRequestException(`Último año aprobado inválido para el plan ${plan.code}`);
+    if(d.gradeLevel>1 && d.literal) throw new BadRequestException('El literal solo se permite en la inscripción de 1° año');
     const existing=await this.db.enrollment.findUnique({where:{studentId_academicYearId:{studentId:d.studentId,academicYearId:d.academicYearId}}});
     if(existing) throw new ConflictException('El estudiante ya posee matrícula en este año escolar');
     const planSubjects=await this.db.studyPlanSubject.findMany({where:{studyPlanId:d.studyPlanId,gradeLevel:d.gradeLevel,active:true}});
@@ -269,7 +279,7 @@ export class EnrollmentService{
     return this.db.$transaction(async tx=>{
       const enrollment=await tx.enrollment.create({data:{
         studentId:d.studentId,academicYearId:d.academicYearId,studyPlanId:d.studyPlanId,sectionId:d.sectionId,gradeLevel:d.gradeLevel,
-        registrationDate:date,lastApprovedYear:this.normalizeUpper(d.lastApprovedYear),literal:this.normalizeUpper(d.literal),isLateEnrollment:late,listNumber,
+        registrationDate:date,lastApprovedYear:normalizedLastApproved,literal:d.gradeLevel===1?this.normalizeUpper(d.literal):undefined,isLateEnrollment:late,listNumber,
       }});
       await tx.enrollmentSubject.createMany({data:planSubjects.map(s=>({enrollmentId:enrollment.id,studyPlanSubjectId:s.id,origin:EnrollmentSubjectOrigin.PLAN_ACTUAL}))});
       if(d.heightCm!==undefined && d.weightGrams!==undefined){
