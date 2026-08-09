@@ -41,8 +41,8 @@ const PHONE_REGEX=/^\d{10,15}$/;
 const GARMENT_SIZES=['10','11','12','13','14','15','16','S','M','L','XL','2XL','3XL'];
 const ENTRY_LITERALS=['A','B','C','D'];
 const LAST_APPROVED_BY_PLAN:Record<string,string[]>={
-  '31059':['1° AÑO','2° AÑO','3° AÑO','4° AÑO'],
-  '41049':['1° AÑO','2° AÑO','3° AÑO','4° AÑO','5° AÑO'],
+  '31059':['6° GRADO','1° AÑO','2° AÑO','3° AÑO','4° AÑO'],
+  '41049':['6° GRADO','1° AÑO','2° AÑO','3° AÑO','4° AÑO','5° AÑO'],
 };
 
 class EnrollDto{
