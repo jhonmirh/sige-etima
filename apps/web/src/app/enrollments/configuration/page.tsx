@@ -18,27 +18,37 @@ export default function EnrollmentConfiguration() {
   const [plans, setPlans] = useState<any[]>([]);
   const [sections, setSections] = useState<any[]>([]);
   const [sectionNames, setSectionNames] = useState<any[]>([]);
+  const [mentions, setMentions] = useState<any[]>([]);
   const [me, setMe] = useState<any>();
   const [yearId, setYearId] = useState('');
+  const [sectionPlanId, setSectionPlanId] = useState('');
+  const [sectionMentionId, setSectionMentionId] = useState('');
   const [cloneSourceId, setCloneSourceId] = useState('');
   const [newYearStartDate, setNewYearStartDate] = useState('');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+  const [sectionNameMsg, setSectionNameMsg] = useState('');
+  const [sectionNameErr, setSectionNameErr] = useState('');
 
   const activeSectionNames = useMemo(() => sectionNames.filter((x: any) => x.active), [sectionNames]);
+  const selectedSectionPlan = useMemo(() => plans.find((x: any) => x.id === sectionPlanId), [plans, sectionPlanId]);
+  const activeMentionsForPlan = useMemo(() => mentions.filter((x: any) => x.active && x.studyPlanId === sectionPlanId), [mentions, sectionPlanId]);
 
   async function load(preferred?: string) {
     try {
-      const [y, p, names, user] = await Promise.all([
+      const [y, p, names, mentionRows, user] = await Promise.all([
         api('/academic/years'),
         api('/academic/plans'),
         api('/academic/section-names'),
+        api('/academic/mentions'),
         api('/auth/me'),
       ]);
       setYears(y);
       setPlans(p);
       setSectionNames(names);
+      setMentions(mentionRows);
       setMe(user);
+      setSectionPlanId(prev => prev || p[0]?.id || '');
       const selected = preferred || yearId || y.find((x: any) => x.active)?.id || y[0]?.id || '';
       setYearId(selected);
       const cloneCandidate = y.find((x: any) => x.id !== selected)?.id || '';
@@ -57,7 +67,8 @@ export default function EnrollmentConfiguration() {
 
   async function createYear(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const f = new FormData(e.currentTarget);
+    const form = e.currentTarget;
+    const f = new FormData(form);
     try {
       const y = await api('/academic/years', {
         method: 'POST',
@@ -71,7 +82,7 @@ export default function EnrollmentConfiguration() {
       });
       setMsg(`Año escolar ${y.name} creado · Cierre automático de matrícula: ${dateLabel(y.enrollmentCloseDate)}`);
       setErr('');
-      e.currentTarget.reset();
+      form.reset();
       setNewYearStartDate('');
       await load(y.id);
     } catch (e: any) { setErr(e.message); }
@@ -79,17 +90,27 @@ export default function EnrollmentConfiguration() {
 
   async function createSectionName(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const f = new FormData(e.currentTarget);
+    const form = e.currentTarget;
+    const f = new FormData(form);
+    setSectionNameMsg('');
+    setSectionNameErr('');
     try {
-      await api('/academic/section-names', {
+      const created = await api('/academic/section-names', {
         method: 'POST',
         body: JSON.stringify({ name: String(f.get('name') || '').toLocaleUpperCase('es-VE') }),
       });
-      setMsg('Nombre de sección agregado al catálogo administrativo');
+      const rows = await api('/academic/section-names');
+      setSectionNames(rows);
+      form.reset();
+      const text = `Nombre de sección ${created?.name || ''} agregado correctamente`.trim();
+      setSectionNameMsg(text);
+      setMsg(text);
       setErr('');
-      e.currentTarget.reset();
-      setSectionNames(await api('/academic/section-names'));
-    } catch (e: any) { setErr(e.message); }
+    } catch (e: any) {
+      const message = Array.isArray(e?.message) ? e.message.join(' · ') : String(e?.message || 'No fue posible agregar el nombre de sección');
+      setSectionNameErr(message);
+      setErr(message);
+    }
   }
 
   async function toggleSectionName(id: string, active: boolean) {
@@ -114,15 +135,58 @@ export default function EnrollmentConfiguration() {
     } catch (e: any) { setErr(e.message); }
   }
 
+  async function createMention(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const f = new FormData(form);
+    try {
+      await api('/academic/mentions', {
+        method: 'POST',
+        body: JSON.stringify({
+          studyPlanId: String(f.get('studyPlanId') || ''),
+          name: String(f.get('name') || '').toLocaleUpperCase('es-VE'),
+        }),
+      });
+      setMsg('Mención agregada al catálogo académico');
+      setErr('');
+      form.reset();
+      setMentions(await api('/academic/mentions'));
+    } catch (e: any) { setErr(e.message); }
+  }
+
+  async function toggleMention(id: string, active: boolean) {
+    try {
+      await api(`/academic/mentions/${id}`, { method: 'PATCH', body: JSON.stringify({ active }) });
+      setMsg(active ? 'Mención activada' : 'Mención inactivada');
+      setErr('');
+      setMentions(await api('/academic/mentions'));
+    } catch (e: any) { setErr(e.message); }
+  }
+
+  async function renameMention(item: any) {
+    const value = window.prompt('Nuevo nombre de la mención', item.name);
+    if (value === null) return;
+    const name = value.trim().toLocaleUpperCase('es-VE');
+    if (!name || name === item.name) return;
+    try {
+      await api(`/academic/mentions/${item.id}`, { method: 'PATCH', body: JSON.stringify({ name }) });
+      setMsg('Nombre de la mención actualizado. Las secciones históricas conservan el nombre con el que fueron creadas.');
+      setErr('');
+      setMentions(await api('/academic/mentions'));
+    } catch (e: any) { setErr(e.message); }
+  }
+
   async function createSection(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const f = new FormData(e.currentTarget);
+    const form = e.currentTarget;
+    const f = new FormData(form);
     try {
       await api('/academic/sections', {
         method: 'POST',
         body: JSON.stringify({
           academicYearId: yearId,
-          studyPlanId: f.get('studyPlanId'),
+          studyPlanId: sectionPlanId,
+          mentionId: sectionMentionId || undefined,
           gradeLevel: Number(f.get('gradeLevel')),
           sectionNameId: f.get('sectionNameId'),
           shift: f.get('shift') || undefined,
@@ -131,7 +195,8 @@ export default function EnrollmentConfiguration() {
       });
       setMsg('Sección creada');
       setErr('');
-      e.currentTarget.reset();
+      form.reset();
+      setSectionMentionId('');
       setSections(await api(`/academic/sections?academicYearId=${yearId}`));
     } catch (e: any) { setErr(e.message); }
   }
@@ -202,8 +267,21 @@ export default function EnrollmentConfiguration() {
         <div style={{flex:1}}><label>Nuevo nombre de sección *</label><input className="input uppercase" name="name" placeholder="ANDRÉS BELLO" onInput={nameOnlyInput} required/></div>
         <button className="btn" type="submit"><Plus size={16}/> Agregar nombre</button>
       </form>
+      {sectionNameMsg && <div className="success-banner" style={{marginBottom:12}}>{sectionNameMsg}</div>}
+      {sectionNameErr && <div className="alert" style={{marginBottom:12}}><strong>No se pudo agregar el nombre.</strong><br/>{sectionNameErr}</div>}
       <div className="table-wrap"><table><thead><tr><th>Nombre</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>{sectionNames.length === 0 ? <tr><td colSpan={3}>Todavía no hay nombres de secciones registrados.</td></tr> : sectionNames.map((n:any) => <tr key={n.id}><td><strong>{n.name}</strong></td><td><span className={`status ${n.active?'ok':'neutral'}`}>{n.active?'ACTIVO':'INACTIVO'}</span></td><td><div className="row-actions"><button className="btn secondary mini-btn" type="button" onClick={() => renameSectionName(n)}>Renombrar</button><button className="btn secondary mini-btn" type="button" onClick={() => toggleSectionName(n.id,!n.active)}>{n.active?'Inactivar':'Activar'}</button></div></td></tr>)}</tbody></table></div>
       <p className="muted" style={{marginTop:10}}>Inactivar un nombre impide usarlo en nuevas secciones, pero no modifica las secciones ni matrículas históricas ya creadas.</p>
+    </section>}
+
+    {me?.role === 'ADMIN' && <section className="card form-section" style={{marginTop:16}}>
+      <div className="section-head"><div><span className="eyebrow">Solo Administrador</span><h2>Catálogo de menciones</h2><p>Cada mención queda vinculada a un plan de estudio y, por medio de ese plan, a su modalidad. Media General 31059 utiliza BACHILLER y Media Técnica 41049 utiliza CIENCIAS AGRÍCOLAS Y PECUARIAS.</p></div><School size={22}/></div>
+      <form onSubmit={createMention} className="form-grid cols-3" style={{alignItems:'end',marginBottom:16}}>
+        <div><label>Plan de estudio *</label><select className="input" name="studyPlanId" required><option value="">Seleccione</option>{plans.map((p:any)=><option key={p.id} value={p.id}>{p.code} · {p.modality==='MEDIA_TECNICA'?'MEDIA TÉCNICA':'MEDIA GENERAL'} · {p.name}</option>)}</select></div>
+        <div><label>Nombre de la mención *</label><input className="input uppercase" name="name" placeholder="BACHILLER" onInput={nameOnlyInput} required/></div>
+        <button className="btn" type="submit" disabled={plans.length===0}><Plus size={16}/> Agregar mención</button>
+      </form>
+      <div className="table-wrap"><table><thead><tr><th>Modalidad</th><th>Plan</th><th>Mención</th><th>Estado</th><th>Secciones</th><th>Acciones</th></tr></thead><tbody>{mentions.length===0?<tr><td colSpan={6}>Todavía no hay menciones registradas.</td></tr>:mentions.map((m:any)=><tr key={m.id}><td><strong>{m.studyPlan?.modality==='MEDIA_TECNICA'?'MEDIA TÉCNICA':'MEDIA GENERAL'}</strong></td><td>{m.studyPlan?.code}</td><td><strong>{m.name}</strong></td><td><span className={`status ${m.active?'ok':'neutral'}`}>{m.active?'ACTIVA':'INACTIVA'}</span></td><td>{m._count?.sections||0}</td><td><div className="row-actions"><button className="btn secondary mini-btn" type="button" onClick={()=>renameMention(m)}>Renombrar</button><button className="btn secondary mini-btn" type="button" onClick={()=>toggleMention(m.id,!m.active)}>{m.active?'Inactivar':'Activar'}</button></div></td></tr>)}</tbody></table></div>
+      <p className="muted" style={{marginTop:10}}>Las secciones históricas guardan una copia de la mención con la que fueron creadas. La modalidad se obtiene siempre del plan asociado.</p>
     </section>}
 
     {me && me.role !== 'ADMIN' && <div className="warning-banner" style={{marginTop:16}}><div><strong>CATÁLOGO DE SECCIONES ADMINISTRADO CENTRALMENTE</strong><span>Los nombres nuevos deben ser incorporados por un usuario con rol ADMINISTRADOR. Los nombres activos quedan disponibles para Dirección al crear secciones.</span></div></div>}
@@ -217,17 +295,20 @@ export default function EnrollmentConfiguration() {
       <form className="card form-section" onSubmit={createSection}>
         <div className="section-head"><div><h3>Crear sección</h3><p>Seleccione un nombre previamente autorizado en el catálogo administrativo.</p></div><School size={22}/></div>
         {activeSectionNames.length === 0 && <div className="alert">No hay nombres activos en el catálogo de secciones. Un Administrador debe registrar al menos uno antes de crear nuevas secciones.</div>}
+        {selectedSectionPlan && activeMentionsForPlan.length===0 && <div className="alert">El plan seleccionado no tiene una mención activa. Un Administrador debe registrar la mención correspondiente antes de crear la sección.</div>}
         <div className="form-grid">
-          <div className="span-2"><label>Plan *</label><select className="input" name="studyPlanId" required>{plans.map(p => <option key={p.id} value={p.id}>{p.code} · {p.name}</option>)}</select></div>
-          <div><label>Grado *</label><select className="input" name="gradeLevel">{[1,2,3,4,5,6].map(g => <option key={g} value={g}>{g}° AÑO</option>)}</select></div>
+          <div className="span-2"><label>Plan *</label><select className="input" value={sectionPlanId} onChange={e=>{setSectionPlanId(e.target.value);setSectionMentionId('')}} required>{plans.map(p => <option key={p.id} value={p.id}>{p.code} · {p.name}</option>)}</select></div>
+          <div><label>Grado *</label><select className="input" name="gradeLevel">{Array.from({length:selectedSectionPlan?.maxGrade||1},(_,i)=>i+1).map(g => <option key={g} value={g}>{g}° AÑO</option>)}</select></div>
+          <div><label>Modalidad</label><div className="input read-only">{selectedSectionPlan?.modality==='MEDIA_TECNICA'?'MEDIA TÉCNICA':'MEDIA GENERAL'}</div></div>
+          <div><label>Mención *</label><select className="input" value={sectionMentionId} onChange={e=>setSectionMentionId(e.target.value)} required><option value="">Seleccione</option>{activeMentionsForPlan.map((m:any)=><option key={m.id} value={m.id}>{m.name}</option>)}</select></div>
           <div><label>Nombre de sección *</label><select className="input" name="sectionNameId" required disabled={activeSectionNames.length===0}><option value="">Seleccione</option>{activeSectionNames.map((n:any) => <option key={n.id} value={n.id}>{n.name}</option>)}</select></div>
-          <div><label>Turno</label><input className="input uppercase" name="shift" onInput={toUpperInput}/></div>
+          <div><label>Turno *</label><select className="input" name="shift" required><option value="">Seleccione</option><option value="INTEGRAL">INTEGRAL</option><option value="MEDIO DÍA MAÑANA">MEDIO DÍA MAÑANA</option><option value="MEDIO DÍA TARDE">MEDIO DÍA TARDE</option></select></div>
           <div><label>Capacidad</label><input className="input" name="capacity" type="number" min="1"/></div>
         </div>
-        <button className="btn" disabled={activeSectionNames.length===0}>Crear sección</button>
+        <button className="btn" disabled={activeSectionNames.length===0 || !sectionMentionId}>Crear sección</button>
       </form>
 
-      <section className="card"><h3>Secciones configuradas</h3><p className="muted">Antes del 31 de octubre, el número es provisional y se determina por cédula. Desde el 31 de octubre inclusive la numeración queda fija automáticamente; toda matrícula posterior recibe el siguiente número al final.</p><div className="table-wrap"><table><thead><tr><th>Plan</th><th>Grado</th><th>Sección</th><th>Turno</th><th>Matrículas</th><th>Nómina</th></tr></thead><tbody>{sections.length === 0 ? <tr><td colSpan={6}>No hay secciones configuradas.</td></tr> : sections.map(s => <tr key={s.id}><td>{s.studyPlan.code}</td><td>{s.gradeLevel}°</td><td>{s.name}</td><td>{s.shift || '—'}</td><td>{s._count?.enrollments || 0}</td><td>{s.rosterLockedAt ? <span className="status ok">FIJA</span> : closeReached(s) ? <span className="status ok">FIJA AUTOMÁTICA</span> : <span className="status warn">PROVISIONAL HASTA {dateLabel(s.academicYear.enrollmentCloseDate)}</span>}</td></tr>)}</tbody></table></div></section>
+      <section className="card"><h3>Secciones configuradas</h3><p className="muted">Antes del 31 de octubre, el número es provisional y se determina por cédula. Desde el 31 de octubre inclusive la numeración queda fija automáticamente; toda matrícula posterior recibe el siguiente número al final.</p><div className="table-wrap"><table><thead><tr><th>Modalidad</th><th>Plan</th><th>Grado</th><th>Mención</th><th>Sección</th><th>Turno</th><th>Matrículas</th><th>Nómina</th></tr></thead><tbody>{sections.length === 0 ? <tr><td colSpan={8}>No hay secciones configuradas.</td></tr> : sections.map(s => <tr key={s.id}><td>{s.studyPlan.modality==='MEDIA_TECNICA'?'MEDIA TÉCNICA':'MEDIA GENERAL'}</td><td>{s.studyPlan.code}</td><td>{s.gradeLevel}°</td><td>{s.mentionName || 'SIN DEFINIR'}</td><td>{s.name}</td><td>{s.shift || '—'}</td><td>{s._count?.enrollments || 0}</td><td>{s.rosterLockedAt ? <span className="status ok">FIJA</span> : closeReached(s) ? <span className="status ok">FIJA AUTOMÁTICA</span> : <span className="status warn">PROVISIONAL HASTA {dateLabel(s.academicYear.enrollmentCloseDate)}</span>}</td></tr>)}</tbody></table></div></section>
     </div>
   </Shell>;
 }

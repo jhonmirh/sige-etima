@@ -121,3 +121,10 @@ La matrícula no se elimina y el número de lista no se modifica. Los primeros 3
 ## Prueba de orden de nómina
 
 Antes del 31 de octubre, la vista previa se ordena por el valor numérico de la cédula. Al comenzar el 31 de octubre (hora institucional de Venezuela), el sistema convierte automáticamente ese orden en números de lista 1..N. Los inscritos o reinscritos posteriores reciben `max(listNumber)+1` y se agregan al final por fecha de registro.
+
+## V2.0.4 — Mención en Educación Media Técnica
+- La mención es obligatoria para secciones de planes de Educación Media Técnica.
+- Media General no utiliza mención.
+- La nómina se identifica funcionalmente por año escolar, plan, grado, mención y sección.
+- La reinscripción conserva la mención anterior; no se permite cambiarla desde el flujo ordinario de Secretaría.
+- `Section.mentionName` conserva el nombre histórico aunque el catálogo sea renombrado posteriormente.

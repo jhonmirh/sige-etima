@@ -47,3 +47,9 @@ La narrativa no fija una fórmula matemática única para promediar las 2–5 ev
 - La fuente de esta condición es la Definitiva Anual del módulo de Notas.
 - Secretaría no puede modificar ordinariamente la condición calculada; solo ADMIN/DIRECTOR disponen de corrección excepcional auditada.
 - El número de lista se fija automáticamente el 31 de octubre. Retiros y altas posteriores no renumeran estudiantes existentes.
+
+### Menciones de Educación Media Técnica
+- Toda sección vinculada a un plan `MEDIA_TECNICA` debe tener una mención activa.
+- Las secciones de `MEDIA_GENERAL` no usan mención.
+- La continuidad académica conserva la misma mención entre años escolares; cualquier cambio de mención debe gestionarse como excepción administrativa y no como reinscripción ordinaria.
+- La numeración de nómina es propia de cada sección; al estar cada sección técnica asociada a una mención, las nóminas permanecen separadas por año, grado, mención y sección.

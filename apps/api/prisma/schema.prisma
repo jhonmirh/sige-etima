@@ -392,6 +392,7 @@ model StudyPlan {
   effectiveFrom DateTime?
   effectiveTo DateTime?
   subjects StudyPlanSubject[]
+  mentions Mention[]
   sections Section[]
   enrollments Enrollment[]
   @@unique([code, effectiveFrom])
@@ -424,6 +425,19 @@ model StudyPlanSubject {
   @@unique([studyPlanId, subjectId, gradeLevel])
 }
 
+model Mention {
+  id String @id @default(uuid())
+  studyPlanId String
+  studyPlan StudyPlan @relation(fields:[studyPlanId], references:[id], onDelete:Cascade)
+  name String
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  sections Section[]
+  @@unique([studyPlanId, name])
+  @@index([studyPlanId, active])
+}
+
 model SectionName {
   id String @id @default(uuid())
   name String @unique
@@ -438,6 +452,9 @@ model Section {
   academicYear AcademicYear @relation(fields:[academicYearId], references:[id], onDelete:Cascade)
   studyPlanId String
   studyPlan StudyPlan @relation(fields:[studyPlanId], references:[id])
+  mentionId String?
+  mention Mention? @relation(fields:[mentionId], references:[id])
+  mentionName String?
   gradeLevel Int
   name String
   shift String?

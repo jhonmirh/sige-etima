@@ -116,6 +116,31 @@ async function main(){
     create:{code:'41049',name:'Técnicos Profesionales en Agropecuaria - Ciencias Agrícolas y Pecuarias',modality:EducationModality.MEDIA_TECNICA,maxGrade:6,titleName:'Técnico Profesional en Agropecuaria, mención Ciencias Agrícolas y Pecuarias',effectiveFrom:new Date('2021-09-01')}
   });
 
+  // Catálogo inicial de menciones por modalidad y plan de estudio.
+  // Media General (31059) -> BACHILLER.
+  // Media Técnica (41049) -> CIENCIAS AGRÍCOLAS Y PECUARIAS.
+  let generalMention=await db.mention.findUnique({
+    where:{studyPlanId_name:{studyPlanId:general.id,name:'BACHILLER'}}
+  });
+  if(!generalMention){
+    generalMention=await db.mention.create({
+      data:{studyPlanId:general.id,name:'BACHILLER',active:true}
+    });
+  } else if(!generalMention.active){
+    generalMention=await db.mention.update({where:{id:generalMention.id},data:{active:true}});
+  }
+
+  let technicalMention=await db.mention.findUnique({
+    where:{studyPlanId_name:{studyPlanId:technical.id,name:'CIENCIAS AGRÍCOLAS Y PECUARIAS'}}
+  });
+  if(!technicalMention){
+    technicalMention=await db.mention.create({
+      data:{studyPlanId:technical.id,name:'CIENCIAS AGRÍCOLAS Y PECUARIAS',active:true}
+    });
+  } else if(!technicalMention.active){
+    technicalMention=await db.mention.update({where:{id:technicalMention.id},data:{active:true}});
+  }
+
   const generalRows:any[]=[
     ['31059-CAS','Castellano',[4,4,4,4,4]],
     ['31059-ING','Inglés y otras lenguas extranjeras',[6,6,6,4,4]],
@@ -168,6 +193,18 @@ async function main(){
   await db.gradingPolicy.upsert({where:{academicYearId:year.id},update:{},create:{academicYearId:year.id}});
   for(let n=1;n<=3;n++) await db.pedagogicalLapse.upsert({where:{academicYearId_number:{academicYearId:year.id,number:n}},update:{},create:{academicYearId:year.id,number:n,startDate:new Date(2026,9+(n-1)*3,1),endDate:new Date(2026,11+(n-1)*3,20)}});
 
+  // Las secciones técnicas creadas antes de V2.0.4 se asocian a la mención institucional existente.
+  // No se modifica su año, grado, sección, matrícula ni numeración.
+  // Normaliza secciones históricas creadas antes de incorporar el catálogo de menciones.
+  await db.section.updateMany({
+    where:{studyPlanId:general.id,mentionId:null},
+    data:{mentionId:generalMention.id,mentionName:generalMention.name}
+  });
+  await db.section.updateMany({
+    where:{studyPlanId:technical.id,mentionId:null},
+    data:{mentionId:technicalMention.id,mentionName:technicalMention.name}
+  });
+
   // Conserva como catálogo administrativo los nombres de secciones que ya existan en años anteriores.
   // Si un nombre fue inactivado por el Administrador, el seed no lo reactiva.
   const existingSectionNames=await db.section.findMany({select:{name:true},distinct:['name']});
@@ -179,8 +216,8 @@ async function main(){
 
   await db.institution.upsert({
     where:{id:'00000000-0000-0000-0000-000000000001'},
-    update:{},
-    create:{id:'00000000-0000-0000-0000-000000000001',name:'ET Isaías Medina Angarita',plantCode:'S0955D2016',statisticalCode:'200554',dependencyCode:'18007911070',address:'Configurar dirección institucional',schoolLogoPath:'/brand/escudo.png',ministryLogoPath:'/brand/ministerio.png'}
+    update:{schoolLogoPath:'/brand/escudo.png',ministryLogoPath:'/brand/ministerio-identidad.png'},
+    create:{id:'00000000-0000-0000-0000-000000000001',name:'ET Isaías Medina Angarita',plantCode:'S0955D2016',statisticalCode:'200554',dependencyCode:'18007911070',address:'Configurar dirección institucional',schoolLogoPath:'/brand/escudo.png',ministryLogoPath:'/brand/ministerio-identidad.png'}
   });
   console.log('Seed SIGE-ETIMA completado');
 }

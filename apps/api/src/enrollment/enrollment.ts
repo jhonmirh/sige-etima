@@ -208,7 +208,13 @@ export class EnrollmentService{
     const outcome=await this.buildOutcome(previous);
     const subjects=outcome.complete?await this.subjectsForNext(previous,outcome):[];
     const sections=outcome.complete && outcome.decision.targetGradeLevel!==null?await this.db.section.findMany({
-      where:{academicYearId:targetAcademicYearId,studyPlanId:previous.studyPlanId,gradeLevel:outcome.decision.targetGradeLevel},
+      where:{
+        academicYearId:targetAcademicYearId,
+        studyPlanId:previous.studyPlanId,
+        gradeLevel:outcome.decision.targetGradeLevel,
+        mentionId:previous.section.mentionId ?? null,
+      },
+      include:{mention:true},
       orderBy:{name:'asc'},
     }):[];
     const suggestedSection=sections.find((s:any)=>s.name.trim().toUpperCase()===previous.section.name.trim().toUpperCase())||sections[0]||null;
@@ -231,6 +237,8 @@ export class EnrollmentService{
         graduationEligible:outcome.decision.graduationEligible,
         studyPlanId:previous.studyPlanId,
         studyPlan:previous.studyPlan,
+        mentionId:previous.section.mentionId || null,
+        mentionName:previous.section.mentionName || null,
         suggestedSection,
         sections,
         subjects:subjects.map((x:any)=>({studyPlanSubjectId:x.studyPlanSubjectId,name:x.subject.name,origin:x.origin,gradeLevel:x.gradeLevel})),
@@ -289,6 +297,7 @@ export class EnrollmentService{
     if(outcome.decision.graduationEligible) throw new BadRequestException('El estudiante aprobó el último grado del plan y es elegible para graduación; no corresponde reinscripción al siguiente año.');
     const section=await this.db.section.findUniqueOrThrow({where:{id:d.sectionId}});
     if(section.academicYearId!==d.targetAcademicYearId || section.studyPlanId!==previous.studyPlanId || section.gradeLevel!==outcome.decision.targetGradeLevel) throw new BadRequestException('La sección seleccionada no corresponde al año, plan o grado calculado por la definitiva');
+    if((section.mentionId||null)!==(previous.section.mentionId||null)) throw new BadRequestException('La reinscripción ordinaria debe conservar la misma mención del plan de estudio. Un cambio de mención requiere un procedimiento administrativo especial.');
     const subjects=await this.subjectsForNext(previous,outcome);
     if(!subjects.length) throw new BadRequestException('No existen materias a cursar según la definitiva del año anterior');
     const date=parseSchoolCalendarDate(d.registrationDate);
@@ -478,6 +487,8 @@ export class EnrollmentService{
       const byPlan=String(a.studyPlan.code||a.studyPlan.name).localeCompare(String(b.studyPlan.code||b.studyPlan.name),'es');
       if(byPlan!==0) return byPlan;
       if(a.gradeLevel!==b.gradeLevel) return a.gradeLevel-b.gradeLevel;
+      const byMention=String(a.section.mentionName||'').localeCompare(String(b.section.mentionName||''),'es');
+      if(byMention!==0) return byMention;
       const bySection=String(a.section.name).localeCompare(String(b.section.name),'es');
       if(bySection!==0) return bySection;
       return (a.displayListNumber??Number.MAX_SAFE_INTEGER)-(b.displayListNumber??Number.MAX_SAFE_INTEGER);

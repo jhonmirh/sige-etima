@@ -1,5 +1,5 @@
 import { BadRequestException, Body, Controller, Get, Injectable, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
-import { IsBoolean, IsDateString, IsInt, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import { IsBoolean, IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 import { Role } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { JwtAuthGuard, Roles, RolesGuard } from '../common/security';
@@ -11,9 +11,10 @@ const SECTION_NAME = /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]+$/u;
 class SectionDto {
   @IsString() academicYearId!: string;
   @IsString() studyPlanId!: string;
+  @IsOptional() @IsString() mentionId?: string;
   @IsInt() @Min(1) @Max(6) gradeLevel!: number;
   @IsString() sectionNameId!: string;
-  @IsOptional() @IsString() shift?: string;
+  @IsString() @IsIn(['INTEGRAL', 'MEDIO DÍA MAÑANA', 'MEDIO DÍA TARDE'], { message: 'Seleccione un turno válido: INTEGRAL, MEDIO DÍA MAÑANA o MEDIO DÍA TARDE' }) shift!: string;
   @IsOptional() @IsInt() @Min(1) capacity?: number;
 }
 
@@ -27,6 +28,25 @@ class UpdateSectionNameDto {
   @IsOptional()
   @IsString()
   @Matches(SECTION_NAME, { message: 'El nombre de la sección solo puede contener letras' })
+  name?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean;
+}
+
+class MentionDto {
+  @IsString() studyPlanId!: string;
+
+  @IsString()
+  @Matches(SECTION_NAME, { message: 'El nombre de la mención solo puede contener letras' })
+  name!: string;
+}
+
+class UpdateMentionDto {
+  @IsOptional()
+  @IsString()
+  @Matches(SECTION_NAME, { message: 'El nombre de la mención solo puede contener letras' })
   name?: string;
 
   @IsOptional()
@@ -71,12 +91,15 @@ export class AcademicService {
   plans() {
     return this.db.studyPlan.findMany({
       where: { active: true },
-      include: { subjects: { include: { subject: true }, orderBy: [{ gradeLevel: 'asc' }, { sortOrder: 'asc' }] } },
+      include: {
+        subjects: { include: { subject: true }, orderBy: [{ gradeLevel: 'asc' }, { sortOrder: 'asc' }] },
+        mentions: { where: { active: true }, orderBy: { name: 'asc' } },
+      },
       orderBy: { code: 'asc' },
     });
   }
 
-  async sections(year?: string, studyPlanId?: string, gradeLevel?: number) {
+  async sections(year?: string, studyPlanId?: string, gradeLevel?: number, mentionId?: string) {
     if (year) {
       const current = await this.db.academicYear.findUnique({ where: { id: year }, select: { id: true, startDate: true, enrollmentCloseDate: true } });
       if (current) {
@@ -90,9 +113,9 @@ export class AcademicService {
       }
     }
     return this.db.section.findMany({
-      where: { academicYearId: year, studyPlanId, gradeLevel },
-      include: { academicYear: true, studyPlan: true, _count: { select: { enrollments: true } } },
-      orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }],
+      where: { academicYearId: year, studyPlanId, gradeLevel, mentionId: mentionId || undefined },
+      include: { academicYear: true, studyPlan: true, mention: true, _count: { select: { enrollments: true } } },
+      orderBy: [{ gradeLevel: 'asc' }, { mentionName: 'asc' }, { name: 'asc' }],
     });
   }
 
@@ -101,6 +124,43 @@ export class AcademicService {
       where: active === undefined ? {} : { active },
       orderBy: { name: 'asc' },
     });
+  }
+
+  mentions(studyPlanId?: string, active?: boolean) {
+    return this.db.mention.findMany({
+      where: {
+        studyPlanId: studyPlanId || undefined,
+        ...(active === undefined ? {} : { active }),
+      },
+      include: { studyPlan: true, _count: { select: { sections: true } } },
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  async createMention(d: MentionDto) {
+    await this.db.studyPlan.findUniqueOrThrow({ where: { id: d.studyPlanId } });
+    const name = d.name.trim().replace(/\s+/g, ' ').toLocaleUpperCase('es-VE');
+    const existing = await this.db.mention.findUnique({
+      where: { studyPlanId_name: { studyPlanId: d.studyPlanId, name } },
+    });
+    if (existing?.active) throw new BadRequestException('Esa mención ya está registrada para el plan seleccionado');
+    if (existing && !existing.active) {
+      return this.db.mention.update({ where: { id: existing.id }, data: { active: true } });
+    }
+    return this.db.mention.create({ data: { studyPlanId: d.studyPlanId, name } });
+  }
+
+  async updateMention(id: string, d: UpdateMentionDto) {
+    const current = await this.db.mention.findUniqueOrThrow({ where: { id }, include: { studyPlan: true } });
+    const data: { name?: string; active?: boolean } = {};
+    if (d.name !== undefined) {
+      const name = d.name.trim().replace(/\s+/g, ' ').toLocaleUpperCase('es-VE');
+      const duplicate = await this.db.mention.findFirst({ where: { studyPlanId: current.studyPlanId, name, NOT: { id } } });
+      if (duplicate) throw new BadRequestException('Esa mención ya está registrada para el plan seleccionado');
+      data.name = name;
+    }
+    if (d.active !== undefined) data.active = d.active;
+    return this.db.mention.update({ where: { id }, data });
   }
 
   async createSectionName(d: SectionNameDto) {
@@ -167,23 +227,25 @@ export class AcademicService {
   }
 
   async createSection(d: SectionDto) {
-    const [year, plan, sectionName] = await Promise.all([
+    const [year, plan, sectionName, mention] = await Promise.all([
       this.db.academicYear.findUniqueOrThrow({ where: { id: d.academicYearId } }),
       this.db.studyPlan.findUniqueOrThrow({ where: { id: d.studyPlanId } }),
       this.db.sectionName.findUnique({ where: { id: d.sectionNameId } }),
+      d.mentionId ? this.db.mention.findUnique({ where: { id: d.mentionId } }) : Promise.resolve(null),
     ]);
     void year;
     if (d.gradeLevel > plan.maxGrade) throw new BadRequestException('El grado excede el máximo permitido por el plan de estudio');
     if (!sectionName?.active) throw new BadRequestException('Seleccione un nombre de sección activo del catálogo administrativo');
+    if (!mention?.active || mention.studyPlanId !== plan.id) {
+      throw new BadRequestException('Seleccione una mención activa correspondiente al plan de estudio');
+    }
 
-    const duplicate = await this.db.section.findUnique({
+    const duplicate = await this.db.section.findFirst({
       where: {
-        academicYearId_studyPlanId_gradeLevel_name: {
-          academicYearId: d.academicYearId,
-          studyPlanId: d.studyPlanId,
-          gradeLevel: d.gradeLevel,
-          name: sectionName.name,
-        },
+        academicYearId: d.academicYearId,
+        studyPlanId: d.studyPlanId,
+        gradeLevel: d.gradeLevel,
+        name: sectionName.name,
       },
     });
     if (duplicate) throw new BadRequestException('Ya existe esa sección para el año, plan y grado seleccionados');
@@ -192,9 +254,11 @@ export class AcademicService {
       data: {
         academicYearId: d.academicYearId,
         studyPlanId: d.studyPlanId,
+        mentionId: mention.id,
+        mentionName: mention.name,
         gradeLevel: d.gradeLevel,
         name: sectionName.name,
-        shift: d.shift?.trim().toLocaleUpperCase('es-VE'),
+        shift: d.shift.trim().toLocaleUpperCase('es-VE'),
         capacity: d.capacity,
       },
     });
@@ -206,11 +270,13 @@ export class AcademicService {
       this.db.academicYear.findUniqueOrThrow({ where: { id: d.sourceAcademicYearId } }),
     ]);
     if (target.id === source.id) throw new BadRequestException('El año origen y destino deben ser diferentes');
-    const rows = await this.db.section.findMany({ where: { academicYearId: source.id } });
+    const rows = await this.db.section.findMany({ where: { academicYearId: source.id }, include: { mention: true } });
     await this.db.section.createMany({
       data: rows.map(s => ({
         academicYearId: target.id,
         studyPlanId: s.studyPlanId,
+        mentionId: s.mentionId,
+        mentionName: s.mention?.name || s.mentionName,
         gradeLevel: s.gradeLevel,
         name: s.name,
         shift: s.shift,
@@ -236,11 +302,15 @@ export class AcademicController {
 
   @Get('years') years() { return this.s.years(); }
   @Get('plans') plans() { return this.s.plans(); }
-  @Get('sections') sections(@Query('academicYearId') year?: string, @Query('studyPlanId') plan?: string, @Query('gradeLevel') grade?: string) {
-    return this.s.sections(year, plan, grade ? Number(grade) : undefined);
+  @Get('sections') sections(@Query('academicYearId') year?: string, @Query('studyPlanId') plan?: string, @Query('gradeLevel') grade?: string, @Query('mentionId') mentionId?: string) {
+    return this.s.sections(year, plan, grade ? Number(grade) : undefined, mentionId);
   }
   @Get('section-names') sectionNames(@Query('active') active?: string) {
     return this.s.sectionNames(active === undefined ? undefined : active === 'true');
+  }
+
+  @Get('mentions') mentions(@Query('studyPlanId') studyPlanId?: string, @Query('active') active?: string) {
+    return this.s.mentions(studyPlanId, active === undefined ? undefined : active === 'true');
   }
 
   @Roles(Role.ADMIN, Role.DIRECTOR)
@@ -262,6 +332,14 @@ export class AcademicController {
   @Roles(Role.ADMIN)
   @Patch('section-names/:id')
   updateSectionName(@Param('id') id: string, @Body() d: UpdateSectionNameDto) { return this.s.updateSectionName(id, d); }
+
+  @Roles(Role.ADMIN)
+  @Post('mentions')
+  createMention(@Body() d: MentionDto) { return this.s.createMention(d); }
+
+  @Roles(Role.ADMIN)
+  @Patch('mentions/:id')
+  updateMention(@Param('id') id: string, @Body() d: UpdateMentionDto) { return this.s.updateMention(id, d); }
 
   @Roles(Role.ADMIN, Role.DIRECTOR)
   @Post('sections')

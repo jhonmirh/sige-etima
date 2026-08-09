@@ -58,3 +58,17 @@ Rutas principales:
 - `/enrollments/[id]`
 
 Ver `docs/10-fase2-matricula-reinscripcion.md`.
+
+## V2.0.3.4 — Cierre automático de matrícula
+- La fecha de cierre ya no se introduce manualmente.
+- Se calcula siempre como 31 de octubre del año de inicio del período escolar.
+- Antes del cierre la nómina es provisional y se ordena por cédula.
+- Desde el 31 de octubre inclusive la nómina queda fija automáticamente y las nuevas altas se agregan al final.
+
+## V2.0.4 — Menciones de Educación Media Técnica
+- Nuevo catálogo administrativo de menciones ligado a planes técnicos.
+- Las secciones técnicas requieren mención; Media General muestra “NO APLICA”.
+- Primera matrícula selecciona mención y la reinscripción conserva automáticamente la anterior.
+- Las nóminas y listados quedan separadas y ordenadas por grado, mención y sección.
+- El plan 41049 incorpora inicialmente la mención `CIENCIAS AGRÍCOLAS Y PECUARIAS`.
+- Las secciones históricas conservan el nombre de la mención con el que fueron creadas.
