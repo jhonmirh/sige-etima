@@ -160,6 +160,28 @@ async function main(){
   const technical=planByCode.get('41049');
   if(!general || !technical) throw new Error('No fue posible cargar los planes institucionales 31059/41049');
 
+  // V2.0.7.4 - Normalización única del catálogo oficial.
+  // En versiones previas algunos planes precargados pudieron quedar ACTIVO por defecto.
+  // La institución debe activar únicamente los planes que realmente ofrece.
+  // Se conservan activos los planes que ya tienen secciones o matrículas para no afectar el histórico.
+  const activationNormalizationMarker='SEED_NORMALIZE_OFFICIAL_PLAN_ACTIVATION_V2074';
+  const alreadyNormalized=await db.auditLog.findFirst({where:{action:activationNormalizationMarker,entity:'StudyPlan'}});
+  if(!alreadyNormalized){
+    const officialPlans=await db.studyPlan.findMany({
+      where:{officialCatalog:true},
+      include:{_count:{select:{sections:true,enrollments:true}}},
+    });
+    for(const p of officialPlans){
+      const inUse=(p._count.sections>0 || p._count.enrollments>0);
+      if(!inUse && p.active){
+        await db.studyPlan.update({where:{id:p.id},data:{active:false}});
+      }
+    }
+    await db.auditLog.create({
+      data:{action:activationNormalizationMarker,entity:'StudyPlan',metadata:{note:'Planes oficiales sin uso institucional establecidos como INACTIVOS. Los planes con secciones o matrículas se conservaron.'}},
+    });
+  }
+
   // Compatibilidad con datos creados antes de que BACHILLER se tratara como plan sin mención.
   let generalMention=await db.mention.findUnique({where:{studyPlanId_name:{studyPlanId:general.id,name:'BACHILLER'}}});
   if(!generalMention) generalMention=await db.mention.create({data:{studyPlanId:general.id,name:'BACHILLER',active:true}});
