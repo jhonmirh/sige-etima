@@ -1,10 +1,11 @@
 import { BadRequestException, Body, Controller, Get, Injectable, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { IsBoolean, IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
-import { Role } from '@prisma/client';
+import { EnrollmentSubjectOrigin, PendingStatus, ResultStatus, Role, StudentCondition } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
-import { JwtAuthGuard, Roles, RolesGuard } from '../common/security';
+import { CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common/security';
 import { automaticEnrollmentCloseDate } from '../common/school-calendar';
 import { EnrollmentService } from '../enrollment/enrollment';
+import { deriveAcademicDecision } from '../enrollment/enrollment.rules';
 
 const SECTION_NAME = /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]+$/u;
 
@@ -219,11 +220,124 @@ export class AcademicService {
   }
 
   async activateYear(id: string) {
-    await this.db.academicYear.findUniqueOrThrow({ where: { id } });
+    const year = await this.db.academicYear.findUniqueOrThrow({ where: { id } });
+    if (year.academicClosedAt) throw new BadRequestException('Un año escolar finalizado académicamente no puede volver a activarse');
     return this.db.$transaction(async tx => {
       await tx.academicYear.updateMany({ data: { active: false } });
       return tx.academicYear.update({ where: { id }, data: { active: true } });
     });
+  }
+
+
+  async academicClosureReadiness(id: string) {
+    const year = await this.db.academicYear.findUniqueOrThrow({
+      where: { id },
+      include: { gradingPolicy: true },
+    });
+    const activeConditions = [StudentCondition.REGULAR, StudentCondition.MATERIA_PENDIENTE, StudentCondition.REPITIENTE, StudentCondition.GRADUADO];
+    const enrollments = await this.db.enrollment.findMany({
+      where: { academicYearId: id, condition: { in: activeConditions } },
+      include: {
+        student: true,
+        studyPlan: true,
+        section: true,
+        annualResults: true,
+        curriculumSubjects: { where: { active: true }, include: { studyPlanSubject: { include: { subject: true } } } },
+        pendingSubjects: { include: { studyPlanSubject: { include: { subject: true } } } },
+      },
+      orderBy: [{ section: { name: 'asc' } }, { student: { lastName: 'asc' } }, { student: { firstName: 'asc' } }],
+    });
+
+    const blockers: any[] = [];
+    const outcomes: any[] = [];
+    const pendingMaxSubjects = year.gradingPolicy?.pendingMaxSubjects ?? 2;
+
+    for (const e of enrollments) {
+      let expected = e.curriculumSubjects
+        .filter(x => x.origin !== EnrollmentSubjectOrigin.MATERIA_PENDIENTE)
+        .map(x => x.studyPlanSubject);
+      if (!expected.length) {
+        expected = await this.db.studyPlanSubject.findMany({
+          where: { studyPlanId: e.studyPlanId, gradeLevel: e.gradeLevel, active: true },
+          include: { subject: true },
+          orderBy: { sortOrder: 'asc' },
+        });
+      }
+      const resultMap = new Map<string, any>(e.annualResults.map(r => [r.studyPlanSubjectId, r]));
+      const missing = expected.filter(x => !resultMap.has(x.id) || resultMap.get(x.id)?.status === ResultStatus.PENDIENTE);
+      const failed = expected.map(x => resultMap.get(x.id)).filter((r: any) => r?.status === ResultStatus.REPROBADO);
+      const unresolvedPending = e.pendingSubjects.filter(p => p.status !== PendingStatus.APROBADA);
+      const reasons: string[] = [];
+      if (!expected.length) reasons.push('No tiene materias activas configuradas para cerrar la definitiva');
+      if (missing.length) reasons.push(`Faltan ${missing.length} definitiva(s): ${missing.map(x => x.subject.name).join(', ')}`);
+      if (unresolvedPending.length) reasons.push(`Tiene ${unresolvedPending.length} materia(s) pendiente(s) sin resolver: ${unresolvedPending.map(p => p.studyPlanSubject?.subject?.name || p.manualSubjectName || 'MATERIA PENDIENTE').join(', ')}`);
+      if (reasons.length) {
+        blockers.push({
+          enrollmentId: e.id,
+          studentId: e.studentId,
+          student: `${e.student.lastName} ${e.student.secondLastName || ''} ${e.student.firstName} ${e.student.middleName || ''}`.replace(/\s+/g, ' ').trim(),
+          identityNumber: e.student.identityNumber,
+          gradeLevel: e.gradeLevel,
+          section: e.section.name,
+          reasons,
+        });
+        continue;
+      }
+      const decision = deriveAcademicDecision({
+        gradeLevel: e.gradeLevel,
+        maxGrade: e.studyPlan.maxGrade,
+        failedCount: failed.length,
+        pendingMaxSubjects,
+      });
+      const finalCondition = decision.graduationEligible ? StudentCondition.GRADUADO : decision.condition;
+      outcomes.push({ enrollmentId: e.id, finalCondition, failedCount: failed.length, graduationEligible: decision.graduationEligible });
+    }
+
+    const counts = {
+      totalMatriculados: await this.db.enrollment.count({ where: { academicYearId: id } }),
+      evaluables: enrollments.length,
+      retirados: await this.db.enrollment.count({ where: { academicYearId: id, condition: { in: [StudentCondition.RETIRADO, StudentCondition.RETIRADO_MODIFICADO] } } }),
+      listos: outcomes.length,
+      pendientes: blockers.length,
+      regular: outcomes.filter(x => x.finalCondition === StudentCondition.REGULAR).length,
+      materiaPendiente: outcomes.filter(x => x.finalCondition === StudentCondition.MATERIA_PENDIENTE).length,
+      repitiente: outcomes.filter(x => x.finalCondition === StudentCondition.REPITIENTE).length,
+      graduado: outcomes.filter(x => x.finalCondition === StudentCondition.GRADUADO).length,
+    };
+    return {
+      year: { id: year.id, name: year.name, startDate: year.startDate, endDate: year.endDate, academicClosedAt: year.academicClosedAt, academicClosedBy: year.academicClosedBy, active: year.active },
+      ready: !year.academicClosedAt && enrollments.length > 0 && blockers.length === 0,
+      alreadyClosed: !!year.academicClosedAt,
+      counts,
+      blockers,
+      outcomes,
+    };
+  }
+
+  async finalizeAcademicYear(id: string, user: any) {
+    const readiness = await this.academicClosureReadiness(id);
+    if (readiness.alreadyClosed) throw new BadRequestException('El año escolar ya fue finalizado académicamente');
+    if (!readiness.counts.evaluables) throw new BadRequestException('No existen matrículas académicamente evaluables para finalizar este año escolar');
+    if (!readiness.ready) throw new BadRequestException(`No se puede finalizar el año escolar. Existen ${readiness.counts.pendientes} estudiante(s) con cierre académico pendiente.`);
+    const now = new Date();
+    const closedBy = user?.email ? `${String(user.email).toLowerCase()} · ${user.role || 'USUARIO'}` : String(user?.sub || 'USUARIO');
+    await this.db.$transaction(async tx => {
+      for (const outcome of readiness.outcomes) {
+        await tx.enrollment.update({
+          where: { id: outcome.enrollmentId },
+          data: {
+            condition: outcome.finalCondition,
+            academicCondition: outcome.finalCondition,
+            academicOutcomeFinalizedAt: now,
+          },
+        });
+      }
+      await tx.academicYear.update({
+        where: { id },
+        data: { academicClosedAt: now, academicClosedBy: closedBy, active: false },
+      });
+    });
+    return this.academicClosureReadiness(id);
   }
 
   async createSection(d: SectionDto) {
@@ -233,7 +347,7 @@ export class AcademicService {
       this.db.sectionName.findUnique({ where: { id: d.sectionNameId } }),
       d.mentionId ? this.db.mention.findUnique({ where: { id: d.mentionId } }) : Promise.resolve(null),
     ]);
-    void year;
+    if (year.academicClosedAt) throw new BadRequestException('No puede crear secciones en un año escolar finalizado académicamente');
     if (d.gradeLevel > plan.maxGrade) throw new BadRequestException('El grado excede el máximo permitido por el plan de estudio');
     if (!sectionName?.active) throw new BadRequestException('Seleccione un nombre de sección activo del catálogo administrativo');
     if (!mention?.active || mention.studyPlanId !== plan.id) {
@@ -270,6 +384,7 @@ export class AcademicService {
       this.db.academicYear.findUniqueOrThrow({ where: { id: d.sourceAcademicYearId } }),
     ]);
     if (target.id === source.id) throw new BadRequestException('El año origen y destino deben ser diferentes');
+    if (target.academicClosedAt) throw new BadRequestException('No puede clonar secciones hacia un año escolar finalizado académicamente');
     const rows = await this.db.section.findMany({ where: { academicYearId: source.id }, include: { mention: true } });
     await this.db.section.createMany({
       data: rows.map(s => ({
@@ -320,6 +435,14 @@ export class AcademicController {
   @Roles(Role.ADMIN, Role.DIRECTOR)
   @Patch('years/:id/activate')
   activate(@Param('id') id: string) { return this.s.activateYear(id); }
+
+  @Roles(Role.ADMIN, Role.DIRECTOR)
+  @Get('years/:id/closure-readiness')
+  closureReadiness(@Param('id') id: string) { return this.s.academicClosureReadiness(id); }
+
+  @Roles(Role.ADMIN, Role.DIRECTOR)
+  @Post('years/:id/finalize')
+  finalizeYear(@Param('id') id: string, @CurrentUser() user: any) { return this.s.finalizeAcademicYear(id, user); }
 
   @Roles(Role.ADMIN, Role.DIRECTOR)
   @Post('years/:id/clone-sections')

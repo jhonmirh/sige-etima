@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, CalendarPlus, Copy, Plus, Power, School } from 'lucide-react';
+import { ArrowLeft, CalendarPlus, CheckCircle2, Copy, Plus, Power, School, TriangleAlert } from 'lucide-react';
 import Shell from '@/components/Shell';
 import { api } from '@/lib/api';
 import { nameOnlyInput, toUpperInput } from '@/lib/formRules';
@@ -29,6 +29,8 @@ export default function EnrollmentConfiguration() {
   const [err, setErr] = useState('');
   const [sectionNameMsg, setSectionNameMsg] = useState('');
   const [sectionNameErr, setSectionNameErr] = useState('');
+  const [closure, setClosure] = useState<any>(null);
+  const [closureLoading, setClosureLoading] = useState(false);
 
   const activeSectionNames = useMemo(() => sectionNames.filter((x: any) => x.active), [sectionNames]);
   const selectedSectionPlan = useMemo(() => plans.find((x: any) => x.id === sectionPlanId), [plans, sectionPlanId]);
@@ -64,6 +66,12 @@ export default function EnrollmentConfiguration() {
   useEffect(() => {
     if (yearId) api(`/academic/sections?academicYearId=${yearId}`).then(setSections).catch((e: any) => setErr(e.message));
   }, [yearId]);
+  useEffect(() => {
+    if (yearId && (me?.role === 'ADMIN' || me?.role === 'DIRECTOR')) {
+      setClosureLoading(true);
+      api(`/academic/years/${yearId}/closure-readiness`).then(setClosure).catch((e: any) => setErr(e.message)).finally(() => setClosureLoading(false));
+    } else setClosure(null);
+  }, [yearId, me?.role]);
 
   async function createYear(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -232,6 +240,28 @@ export default function EnrollmentConfiguration() {
     } catch (e: any) { setErr(e.message); }
   }
 
+
+  async function refreshClosure() {
+    if (!yearId) return;
+    setClosureLoading(true);
+    try { setClosure(await api(`/academic/years/${yearId}/closure-readiness`)); setErr(''); }
+    catch (e: any) { setErr(e.message); }
+    finally { setClosureLoading(false); }
+  }
+
+  async function finalizeAcademicYear() {
+    const year = years.find((x: any) => x.id === yearId);
+    if (!year || !closure?.ready) return;
+    if (!confirm(`¿FINALIZAR ACADÉMICAMENTE EL AÑO ESCOLAR ${year.name}?\n\nEsta acción consolidará la condición de cada estudiante según sus definitivas y habilitará la reinscripción al período siguiente.`)) return;
+    try {
+      const result = await api(`/academic/years/${yearId}/finalize`, { method: 'POST' });
+      setClosure(result);
+      setMsg(`Año escolar ${year.name} finalizado académicamente. La reinscripción al siguiente período ya puede utilizar sus resultados.`);
+      setErr('');
+      await load(yearId);
+    } catch (e: any) { setErr(e.message); }
+  }
+
   return <Shell title="Configuración de matrícula">
     <div className="page-heading">
       <div><span className="eyebrow">Administración anual</span><h1>Años escolares y secciones</h1><p>Configure el período destino antes de iniciar reinscripciones. El cierre de matrícula es automático cada 31 de octubre; los nombres de las secciones se administran desde un catálogo central.</p></div>
@@ -257,9 +287,21 @@ export default function EnrollmentConfiguration() {
 
       <section className="card form-section">
         <div className="section-head"><div><h2>Períodos existentes</h2><p>Solo un año escolar debe estar activo.</p></div></div>
-        <div className="mini-list">{years.map(y => <div key={y.id}><div><strong>{y.name}</strong><small>{dateLabel(y.startDate)} – {dateLabel(y.endDate)} · Cierre automático {dateLabel(y.enrollmentCloseDate)} · {y._count?.enrollments || 0} matrícula(s)</small></div><div className="row-actions">{y.active ? <span className="status ok">ACTIVO</span> : <><button className="btn secondary" onClick={() => activate(y.id)}><Power size={14}/> Activar</button>{(y._count?.enrollments || 0) > 0 && <button className="btn secondary" onClick={() => inactivateYear(y.id, y.name)}>Pasar a Inactivo</button>}</>}</div></div>)}</div>
+        <div className="mini-list">{years.map(y => <div key={y.id}><div><strong>{y.name}</strong><small>{dateLabel(y.startDate)} – {dateLabel(y.endDate)} · Cierre automático {dateLabel(y.enrollmentCloseDate)} · {y._count?.enrollments || 0} matrícula(s){y.academicClosedAt?` · Finalizado ${dateLabel(y.academicClosedAt)}`:''}</small></div><div className="row-actions">{y.academicClosedAt ? <><span className="status ok">AÑO FINALIZADO</span>{(y._count?.enrollments || 0)>0&&<button className="btn secondary" onClick={() => inactivateYear(y.id, y.name)}>Pasar a Inactivo</button>}</> : y.active ? <span className="status ok">ACTIVO</span> : <button className="btn secondary" onClick={() => activate(y.id)}><Power size={14}/> Activar</button>}</div></div>)}</div>
       </section>
     </div>
+
+    {(me?.role === 'ADMIN' || me?.role === 'DIRECTOR') && <section className="card form-section" style={{marginTop:16}}>
+      <div className="section-head"><div><span className="eyebrow">Dirección / Administración</span><h2>Cierre académico del año escolar</h2><p>La finalización académica es distinta al cierre de matrícula del 31 de octubre. Solo después de este cierre se habilita la reinscripción basada en definitivas.</p></div>{closure?.alreadyClosed?<CheckCircle2 size={24}/>:<TriangleAlert size={24}/>}</div>
+      <div className="row-actions" style={{marginBottom:14}}><select className="input" value={yearId} onChange={e=>setYearId(e.target.value)}>{years.map(y=><option key={y.id} value={y.id}>{y.name}</option>)}</select><button type="button" className="btn secondary" onClick={refreshClosure} disabled={closureLoading}>{closureLoading?'Revisando…':'Revisar estado'}</button></div>
+      {closureLoading?<p className="muted">Verificando definitivas y materias pendientes…</p>:closure&&<>
+        {closure.alreadyClosed?<div className="success-banner"><div><strong>AÑO ESCOLAR FINALIZADO</strong><span>{dateLabel(closure.year.academicClosedAt)} · {closure.year.academicClosedBy||'USUARIO REGISTRADO'}. La reinscripción al período siguiente puede utilizar estas definitivas.</span></div></div>:<>
+          <div className="decision-grid" style={{marginBottom:14}}><div><span>Matrículas totales</span><strong>{closure.counts.totalMatriculados}</strong></div><div><span>Evaluables</span><strong>{closure.counts.evaluables}</strong></div><div><span>Listas para cerrar</span><strong>{closure.counts.listos}</strong></div><div><span>Con pendientes</span><strong>{closure.counts.pendientes}</strong></div><div><span>Retirados excluidos</span><strong>{closure.counts.retirados}</strong></div></div>
+          {closure.ready?<><div className="success-banner"><div><strong>LISTO PARA FINALIZAR</strong><span>REGULAR: {closure.counts.regular} · MATERIA PENDIENTE: {closure.counts.materiaPendiente} · REPITIENTE: {closure.counts.repitiente} · GRADUADO: {closure.counts.graduado}</span></div></div><div className="action-bar"><button type="button" className="btn" onClick={finalizeAcademicYear}><CheckCircle2 size={17}/> Finalizar año escolar</button></div></>:<div className="warning-banner"><TriangleAlert size={20}/><div><strong>NO SE PUEDE FINALIZAR</strong><span>Hay {closure.counts.pendientes} estudiante(s) con definitivas incompletas o materias pendientes sin resolver.</span></div></div>}
+          {closure.blockers?.length>0&&<div className="table-wrap" style={{marginTop:14}}><table><thead><tr><th>Estudiante</th><th>Grado / sección</th><th>Motivo</th></tr></thead><tbody>{closure.blockers.slice(0,20).map((b:any)=><tr key={b.enrollmentId}><td><strong>{b.student}</strong><br/><small>{b.identityNumber?`V/E-${b.identityNumber}`:'SIN CÉDULA'}</small></td><td>{b.gradeLevel}° · {b.section}</td><td>{b.reasons.join(' · ')}</td></tr>)}</tbody></table>{closure.blockers.length>20&&<p className="muted">Se muestran los primeros 20 de {closure.blockers.length} casos pendientes.</p>}</div>}
+        </>}
+      </>}
+    </section>}
 
     {me?.role === 'ADMIN' && <section className="card form-section" style={{marginTop:16}}>
       <div className="section-head"><div><span className="eyebrow">Solo Administrador</span><h2>Catálogo de nombres de secciones</h2><p>Registre aquí los nombres permitidos. Después, Dirección o Administración podrán seleccionarlos al crear una sección para cada año escolar.</p></div><School size={22}/></div>

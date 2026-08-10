@@ -27,8 +27,8 @@ export default function LinkStudentToRepresentative(){
 
   async function loadData(){
     try{
-      const [r,s]:any[]=await Promise.all([api(`/representatives/${id}`),api('/students?active=true')]);
-      setRepresentative(r);setStudents(s);setError('');
+      const [r,s]:any[]=await Promise.all([api(`/representatives/${id}`),api('/students')]);
+      setRepresentative(r);setStudents((s||[]).filter((student:any)=>student.active!==false));setError('');
     }catch(e:any){setError(e.message)}
   }
 
@@ -39,18 +39,19 @@ export default function LinkStudentToRepresentative(){
     return()=>window.removeEventListener('focus',refresh);
   },[id]);
 
-  const available=useMemo(()=>{
+  const visibleStudents=useMemo(()=>{
     if(!representative)return [];
-    const linked=new Set((representative.students||[]).map((x:any)=>x.studentId));
     const term=q.trim().toLocaleUpperCase('es-VE');
     return students.filter((s:any)=>{
-      if(linked.has(s.id))return false;
       if(!term)return true;
       const haystack=[s.firstName,s.middleName,s.lastName,s.secondLastName,s.identityNumber,s.schoolIdentityNumber]
         .filter(Boolean).join(' ').toLocaleUpperCase('es-VE');
       return haystack.includes(term.replace(/^[VE]-?/,'').trim())||haystack.includes(term);
     });
   },[students,representative,q]);
+
+  const linkedStudentIds=useMemo(()=>new Set((representative?.students||[]).map((x:any)=>x.studentId)),[representative]);
+  const availableCount=visibleStudents.filter((s:any)=>!linkedStudentIds.has(s.id)).length;
 
   async function submit(e:FormEvent<HTMLFormElement>){
     e.preventDefault();
@@ -86,14 +87,14 @@ export default function LinkStudentToRepresentative(){
 
     {error&&<div className="alert">{error}</div>}
 
-    <div className="card" style={{marginBottom:16}}><div className="person-title"><strong>{[representative.firstName,representative.middleName,representative.lastName,representative.secondLastName].filter(Boolean).join(' ')}</strong><span className="status ok">{identityLabel(representative)}</span></div><p className="muted">Estudiantes actualmente vinculados: {representative.students?.length||0}</p></div>
+    <div className="card" style={{marginBottom:16}}><div className="person-title"><strong>{[representative.firstName,representative.middleName,representative.lastName,representative.secondLastName].filter(Boolean).join(' ')}</strong><span className="status ok">{identityLabel(representative)}</span></div><p className="muted">Estudiantes visibles: {students.length} · Actualmente vinculados: {representative.students?.length||0} · Disponibles para vincular: {availableCount}</p></div>
 
     <form onSubmit={submit} className="stack">
       <section className="card form-section">
         <div className="section-head"><div><h2>1. Buscar estudiante</h2><p>Busca por nombre, apellido, cédula o cédula escolar.</p></div></div>
         <div className="row-actions" style={{marginBottom:14}}><div className="search-box" style={{flex:1}}><Search size={18}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar estudiante"/></div><button type="button" className="btn secondary" onClick={loadData}><RefreshCw size={16}/> Actualizar lista</button></div>
-        {available.length===0?<div className="empty-state"><UsersRound size={28}/><strong>No hay estudiantes disponibles</strong><span>Todos los estudiantes visibles ya pueden estar vinculados con este representante.</span></div>:
-        <div className="table-wrap"><table><thead><tr><th></th><th>Identificación</th><th>Estudiante</th><th>Representante actual</th></tr></thead><tbody>{available.map((s:any)=>{const primary=s.representatives?.find((x:any)=>x.isPrimary)?.representative;return <tr key={s.id} onClick={()=>setSelected(s.id)} style={{cursor:'pointer'}}><td><input type="radio" name="studentChoice" checked={selected===s.id} onChange={()=>setSelected(s.id)}/></td><td><strong>{identityLabel(s)}</strong></td><td>{[s.firstName,s.middleName,s.lastName,s.secondLastName].filter(Boolean).join(' ')}</td><td>{primary?`${primary.firstName} ${primary.lastName}`:'SIN PRINCIPAL'}</td></tr>})}</tbody></table></div>}
+        {visibleStudents.length===0?<div className="empty-state"><UsersRound size={28}/><strong>No se encontraron estudiantes</strong><span>No hay coincidencias con la búsqueda actual. Use Actualizar lista si acaba de registrar un estudiante.</span></div>:
+        <div className="table-wrap"><table><thead><tr><th></th><th>Identificación</th><th>Estudiante</th><th>Representante principal</th><th>Estado del vínculo</th></tr></thead><tbody>{visibleStudents.map((s:any)=>{const primary=s.representatives?.find((x:any)=>x.isPrimary)?.representative;const alreadyLinked=linkedStudentIds.has(s.id);return <tr key={s.id} onClick={()=>!alreadyLinked&&setSelected(s.id)} style={{cursor:alreadyLinked?'default':'pointer'}}><td><input type="radio" name="studentChoice" checked={selected===s.id} onChange={()=>!alreadyLinked&&setSelected(s.id)} disabled={alreadyLinked}/></td><td><strong>{identityLabel(s)}</strong></td><td>{[s.firstName,s.middleName,s.lastName,s.secondLastName].filter(Boolean).join(' ')}</td><td>{primary?`${primary.firstName} ${primary.lastName}`:'SIN PRINCIPAL'}</td><td>{alreadyLinked?<span className="status ok">YA VINCULADO</span>:<span className="status neutral">DISPONIBLE</span>}</td></tr>})}</tbody></table></div>}
       </section>
 
       <section className="card form-section">

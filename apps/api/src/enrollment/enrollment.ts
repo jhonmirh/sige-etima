@@ -22,6 +22,7 @@ import {
   IsString,
   Matches,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 import {
@@ -60,6 +61,7 @@ class EnrollDto{
   @IsOptional() @IsIn(ENTRY_LITERALS) literal?:string;
   @IsOptional() @IsIn(EXTERNAL_ENTRY_CONDITIONS) condition?:StudentCondition;
   @IsOptional() @IsArray() @IsString({each:true}) failedSubjectIds?:string[];
+  @IsOptional() @IsArray() @IsString({each:true}) @MaxLength(120,{each:true}) manualPendingSubjectNames?:string[];
   @IsOptional() @IsInt() @Min(50) @Max(250) heightCm?:number;
   @IsOptional() @IsInt() @Min(10000) @Max(300000) weightGrams?:number;
   @IsOptional() @IsIn(GARMENT_SIZES) shirtSize?:string;
@@ -130,14 +132,75 @@ export class EnrollmentService{
     return String(a.student?.firstName||'').localeCompare(String(b.student?.firstName||''),'es');
   }
 
-  private async requireRepresentative(studentId:string){
-    const links=await this.db.studentRepresentative.findMany({
-      where:{studentId,representative:{active:true}},
-      include:{representative:true},
+  private studentEnrollmentMissingFields(student:any){
+    const missing:string[]=[];
+    if(student?.active===false) missing.push('Estado del estudiante ACTIVO');
+    const required:[string,string][]=[
+      ['nationality','Nacionalidad'],['identityNumber','Cédula'],['firstName','Primer nombre'],['lastName','Primer apellido'],
+      ['sex','Sexo'],['birthDate','Fecha de nacimiento'],['birthPlace','Lugar de nacimiento'],['birthStateId','Estado de nacimiento'],
+      ['birthMunicipalityId','Municipio de nacimiento'],['birthParishId','Parroquia de nacimiento'],['address','Dirección completa'],
+      ['residenceStateId','Estado de residencia'],['residenceMunicipalityId','Municipio de residencia'],['residenceParishId','Parroquia de residencia'],
+      ['livingWith','Vive con'],['phone','Teléfono del estudiante'],['email','Correo electrónico del estudiante'],
+    ];
+    for(const [field,label] of required){
+      const value=student?.[field];
+      if(value===null || value===undefined || (typeof value==='string' && !value.trim())) missing.push(label);
+    }
+    if(student?.birthDate && ageOnDate(student.birthDate)<10) missing.push('Edad mínima del estudiante: 10 años');
+    if(student?.disability && !student?.disabilityDetails?.trim()) missing.push('Descripción de discapacidad');
+    if(student?.allergy && !student?.allergyDetails?.trim()) missing.push('Descripción de alergias');
+    return missing;
+  }
+
+  private representativeEnrollmentMissingFields(representative:any){
+    const missing:string[]=[];
+    const required:[string,string][]=[
+      ['nationality','Nacionalidad'],['identityNumber','Cédula'],['firstName','Primer nombre'],['lastName','Primer apellido'],
+      ['address','Dirección'],['birthDate','Fecha de nacimiento'],['phone1','Teléfono principal'],
+    ];
+    for(const [field,label] of required){
+      const value=representative?.[field];
+      if(value===null || value===undefined || (typeof value==='string' && !value.trim())) missing.push(label);
+    }
+    if(representative?.birthDate && ageOnDate(representative.birthDate)<18) missing.push('Edad mínima del representante: 18 años');
+    return missing;
+  }
+
+  private async enrollmentEligibility(studentId:string){
+    const student=await this.db.student.findUniqueOrThrow({
+      where:{id:studentId},
+      include:{representatives:{include:{representative:true},orderBy:{isPrimary:'desc'}}},
     });
-    if(!links.length) throw new BadRequestException('El estudiante debe tener al menos un representante activo vinculado antes de formalizar la matrícula');
-    const adult=links.find((x:any)=>x.representative?.birthDate && ageOnDate(x.representative.birthDate)>=18);
-    if(!adult) throw new BadRequestException('Debe existir al menos un representante activo con fecha de nacimiento registrada y 18 años o más antes de formalizar la matrícula');
+    const missingStudentFields=this.studentEnrollmentMissingFields(student);
+    const activeLinks=(student.representatives||[]).filter((x:any)=>x.representative?.active!==false);
+    const representativeChecks=activeLinks.map((x:any)=>({
+      representativeId:x.representativeId,
+      name:[x.representative?.firstName,x.representative?.lastName].filter(Boolean).join(' '),
+      missingFields:this.representativeEnrollmentMissingFields(x.representative),
+    }));
+    const validRepresentative=representativeChecks.find((x:any)=>x.missingFields.length===0);
+    const representativeProblem=activeLinks.length===0
+      ? 'Debe vincular al menos un representante activo al estudiante.'
+      : !validRepresentative
+        ? 'Debe completar los datos obligatorios de al menos un representante activo y verificar que tenga 18 años o más.'
+        : null;
+    return {
+      ready:missingStudentFields.length===0 && !representativeProblem,
+      missingStudentFields,
+      representativeProblem,
+      representativeChecks,
+      validRepresentativeId:validRepresentative?.representativeId||null,
+    };
+  }
+
+  private async requireEnrollmentReadyStudent(studentId:string){
+    const eligibility=await this.enrollmentEligibility(studentId);
+    const issues=[
+      ...(eligibility.missingStudentFields.length?['Complete la ficha del estudiante: '+eligibility.missingStudentFields.join(', ')]:[]),
+      ...(eligibility.representativeProblem?[eligibility.representativeProblem]:[]),
+    ];
+    if(issues.length) throw new BadRequestException(`No se puede formalizar esta operación de matrícula. ${issues.join(' ')}`);
+    return eligibility;
   }
 
   private async nextListNumber(sectionId:string){
@@ -249,6 +312,7 @@ export class EnrollmentService{
       },
     });
     if(!student) throw new BadRequestException('No se encontró un estudiante con esa nacionalidad y cédula');
+    const enrollmentEligibility=await this.enrollmentEligibility(student.id);
     const already=await this.db.enrollment.findUnique({where:{studentId_academicYearId:{studentId:student.id,academicYearId:targetAcademicYearId}},include:{academicYear:true,studyPlan:true,section:true,withdrawal:true,curriculumSubjects:{where:{active:true}}}});
     const previous=await this.previousEnrollmentFor(student.id,targetYear);
     const alreadyCondition=already?.condition as StudentCondition|undefined;
@@ -266,7 +330,7 @@ export class EnrollmentService{
       listNumber:already.listNumber,
     }:null;
     if(!previous){
-      return {student,targetAcademicYear:targetYear,alreadyEnrolled:already||null,alreadyEnrollmentActive:alreadyActive,alreadyEnrollmentWithdrawn:alreadyWithdrawn,reinstatement,previousEnrollment:null,recommendation:null,message:alreadyWithdrawn?'El estudiante posee una matrícula retirada en el año destino y puede ser reincorporado.':'El estudiante no posee una matrícula anterior que pueda generar reinscripción automática.'};
+      return {student,targetAcademicYear:targetYear,enrollmentEligibility,alreadyEnrolled:already||null,alreadyEnrollmentActive:alreadyActive,alreadyEnrollmentWithdrawn:alreadyWithdrawn,reinstatement,previousEnrollment:null,recommendation:null,message:alreadyWithdrawn?'El estudiante posee una matrícula retirada en el año destino y puede ser reincorporado.':'El estudiante no posee una matrícula anterior que pueda generar reinscripción automática.'};
     }
     const outcome=await this.buildOutcome(previous);
     const subjects=outcome.complete?await this.subjectsForNext(previous,outcome):[];
@@ -284,17 +348,21 @@ export class EnrollmentService{
     return {
       student,
       targetAcademicYear:targetYear,
+      enrollmentEligibility,
       alreadyEnrolled:already||null,
       alreadyEnrollmentActive:alreadyActive,
       alreadyEnrollmentWithdrawn:alreadyWithdrawn,
       reinstatement,
       previousEnrollment:previous,
+      previousAcademicYearClosed:!!previous.academicYear.academicClosedAt,
+      previousAcademicYearClosedAt:previous.academicYear.academicClosedAt||null,
+      previousAcademicYearClosedBy:previous.academicYear.academicClosedBy||null,
       academicOutcome:{
         complete:outcome.complete,
         expectedCount:outcome.expected.length,
         resultCount:outcome.relevantResults.length,
         missingSubjects:outcome.missing.map((x:any)=>({id:x.id,name:x.subject.name})),
-        unresolvedPendingSubjects:outcome.unresolvedPending.map((x:any)=>({id:x.id,name:x.studyPlanSubject.subject.name,status:x.status})),
+        unresolvedPendingSubjects:outcome.unresolvedPending.map((x:any)=>({id:x.id,name:x.studyPlanSubject?.subject?.name||x.manualSubjectName||'MATERIA PENDIENTE',sourceLevel:x.sourceLevel,status:x.status})),
         failedSubjects:outcome.failed.map((r:any)=>({studyPlanSubjectId:r.studyPlanSubjectId,name:r.studyPlanSubject.subject.name,numericScore:r.numericScore,letterScore:r.letterScore,status:r.status,gradeLevel:r.studyPlanSubject.gradeLevel})),
       },
       recommendation:outcome.complete?{
@@ -313,13 +381,14 @@ export class EnrollmentService{
   }
 
   async enroll(d:EnrollDto){
-    await this.requireRepresentative(d.studentId);
+    await this.requireEnrollmentReadyStudent(d.studentId);
     const [year,section,student,plan]=await Promise.all([
       this.db.academicYear.findUniqueOrThrow({where:{id:d.academicYearId}}),
       this.db.section.findUniqueOrThrow({where:{id:d.sectionId}}),
       this.db.student.findUniqueOrThrow({where:{id:d.studentId}}),
       this.db.studyPlan.findUniqueOrThrow({where:{id:d.studyPlanId}}),
     ]);
+    if(year.academicClosedAt) throw new BadRequestException(`El año escolar ${year.name} ya fue finalizado académicamente y no admite nuevas matrículas`);
     if(!student.active) throw new BadRequestException('El estudiante está inactivo');
     if(ageOnDate(student.birthDate)<10) throw new BadRequestException('El estudiante debe tener al menos 10 años cumplidos para formalizar la matrícula');
     if(section.academicYearId!==d.academicYearId || section.studyPlanId!==d.studyPlanId || section.gradeLevel!==d.gradeLevel) throw new BadRequestException('Sección incompatible con año, plan o grado');
@@ -342,6 +411,11 @@ export class EnrollmentService{
     const condition=d.condition??StudentCondition.REGULAR;
     if(!EXTERNAL_ENTRY_CONDITIONS.includes(condition)) throw new BadRequestException('Condición académica de ingreso inválida');
     const failedSubjectIds=[...new Set((d.failedSubjectIds||[]).filter(Boolean))];
+    const rawManualPendingSubjectNames=(d.manualPendingSubjectNames||[])
+      .map(x=>this.normalizeUpper(x))
+      .filter((x):x is string=>!!x);
+    const manualPendingSubjectNames=[...new Set(rawManualPendingSubjectNames)];
+    if(rawManualPendingSubjectNames.length!==manualPendingSubjectNames.length) throw new BadRequestException('Las materias pendientes de 6° GRADO no pueden estar repetidas');
     const policy=await this.db.gradingPolicy.findUnique({where:{academicYearId:d.academicYearId}});
     const pendingMaxSubjects=policy?.pendingMaxSubjects??2;
     const planSubjects=await this.db.studyPlanSubject.findMany({where:{studyPlanId:d.studyPlanId,gradeLevel:d.gradeLevel,active:true},include:{subject:true},orderBy:{sortOrder:'asc'}});
@@ -349,20 +423,29 @@ export class EnrollmentService{
 
     let curriculumRows:{studyPlanSubjectId:string;origin:EnrollmentSubjectOrigin}[]=[];
     let manualFailedSubjects:any[]=[];
+    let externalPrimaryPendingNames:string[]=[];
     if(condition===StudentCondition.REGULAR){
-      if(failedSubjectIds.length) throw new BadRequestException('Un estudiante REGULAR no debe registrar materias reprobadas');
+      if(failedSubjectIds.length || manualPendingSubjectNames.length) throw new BadRequestException('Un estudiante REGULAR no debe registrar materias reprobadas o pendientes');
       curriculumRows=planSubjects.map(s=>({studyPlanSubjectId:s.id,origin:EnrollmentSubjectOrigin.PLAN_ACTUAL}));
     }else if(condition===StudentCondition.MATERIA_PENDIENTE){
-      if(d.gradeLevel<=1) throw new BadRequestException('La condición MATERIA PENDIENTE en primera matrícula requiere ingreso a 2° año o superior, porque las materias pendientes deben pertenecer al año inmediatamente anterior del plan de educación media');
-      if(failedSubjectIds.length<1 || failedSubjectIds.length>pendingMaxSubjects) throw new BadRequestException(`MATERIA PENDIENTE requiere entre 1 y ${pendingMaxSubjects} materia(s) reprobada(s)`);
       if(!student.originSchool?.trim()) throw new BadRequestException('Para registrar MATERIA PENDIENTE de otro plantel debe indicar el Plantel de procedencia en la ficha del estudiante');
-      manualFailedSubjects=await this.db.studyPlanSubject.findMany({where:{id:{in:failedSubjectIds},studyPlanId:d.studyPlanId,gradeLevel:d.gradeLevel-1,active:true},include:{subject:true},orderBy:{sortOrder:'asc'}});
-      if(manualFailedSubjects.length!==failedSubjectIds.length) throw new BadRequestException(`Las materias pendientes deben corresponder al ${d.gradeLevel-1}° AÑO del mismo plan de estudio`);
-      curriculumRows=[
-        ...planSubjects.map(s=>({studyPlanSubjectId:s.id,origin:EnrollmentSubjectOrigin.PLAN_ACTUAL})),
-        ...manualFailedSubjects.map(s=>({studyPlanSubjectId:s.id,origin:EnrollmentSubjectOrigin.MATERIA_PENDIENTE})),
-      ];
+      if(d.gradeLevel===1){
+        if(failedSubjectIds.length) throw new BadRequestException('Para ingreso a 1° AÑO las materias pendientes de 6° GRADO deben registrarse por nombre, no como materias del plan de educación media');
+        if(manualPendingSubjectNames.length<1 || manualPendingSubjectNames.length>pendingMaxSubjects) throw new BadRequestException(`MATERIA PENDIENTE desde 6° GRADO requiere entre 1 y ${pendingMaxSubjects} materia(s) pendiente(s)`);
+        externalPrimaryPendingNames=manualPendingSubjectNames;
+        curriculumRows=planSubjects.map(s=>({studyPlanSubjectId:s.id,origin:EnrollmentSubjectOrigin.PLAN_ACTUAL}));
+      }else{
+        if(manualPendingSubjectNames.length) throw new BadRequestException('Las materias pendientes manuales solo se permiten cuando el estudiante ingresa a 1° AÑO desde 6° GRADO');
+        if(failedSubjectIds.length<1 || failedSubjectIds.length>pendingMaxSubjects) throw new BadRequestException(`MATERIA PENDIENTE requiere entre 1 y ${pendingMaxSubjects} materia(s) reprobada(s)`);
+        manualFailedSubjects=await this.db.studyPlanSubject.findMany({where:{id:{in:failedSubjectIds},studyPlanId:d.studyPlanId,gradeLevel:d.gradeLevel-1,active:true},include:{subject:true},orderBy:{sortOrder:'asc'}});
+        if(manualFailedSubjects.length!==failedSubjectIds.length) throw new BadRequestException(`Las materias pendientes deben corresponder al ${d.gradeLevel-1}° AÑO del mismo plan de estudio`);
+        curriculumRows=[
+          ...planSubjects.map(s=>({studyPlanSubjectId:s.id,origin:EnrollmentSubjectOrigin.PLAN_ACTUAL})),
+          ...manualFailedSubjects.map(s=>({studyPlanSubjectId:s.id,origin:EnrollmentSubjectOrigin.MATERIA_PENDIENTE})),
+        ];
+      }
     }else{
+      if(manualPendingSubjectNames.length) throw new BadRequestException('REPITIENTE debe seleccionar materias del mismo grado del plan de estudio; no admite materias pendientes manuales de 6° GRADO');
       if(failedSubjectIds.length<=pendingMaxSubjects) throw new BadRequestException(`REPITIENTE requiere más de ${pendingMaxSubjects} materias reprobadas`);
       if(!student.originSchool?.trim()) throw new BadRequestException('Para registrar REPITIENTE proveniente de otro plantel debe indicar el Plantel de procedencia en la ficha del estudiante');
       manualFailedSubjects=await this.db.studyPlanSubject.findMany({where:{id:{in:failedSubjectIds},studyPlanId:d.studyPlanId,gradeLevel:d.gradeLevel,active:true},include:{subject:true},orderBy:{sortOrder:'asc'}});
@@ -380,23 +463,42 @@ export class EnrollmentService{
       const enrollment=await tx.enrollment.create({data:{
         studentId:d.studentId,academicYearId:d.academicYearId,studyPlanId:d.studyPlanId,sectionId:d.sectionId,gradeLevel:d.gradeLevel,
         registrationDate:date,lastApprovedYear:normalizedLastApproved,literal:d.gradeLevel===1?this.normalizeUpper(d.literal):undefined,isLateEnrollment:late,listNumber,condition,
-        notes:condition===StudentCondition.REGULAR?undefined:`CONDICIÓN DE INGRESO MANUAL DESDE OTRO PLANTEL: ${condition.replaceAll('_',' ')}${student.originSchool?` · PROCEDENCIA: ${this.normalizeUpper(student.originSchool)}`:''}`,
+        notes:condition===StudentCondition.REGULAR?undefined:`CONDICIÓN DE INGRESO MANUAL DESDE OTRO PLANTEL: ${condition.replaceAll('_',' ')}${student.originSchool?` · PROCEDENCIA: ${this.normalizeUpper(student.originSchool)}`:''}${condition===StudentCondition.MATERIA_PENDIENTE && d.gradeLevel===1 && externalPrimaryPendingNames.length?` · PENDIENTES 6° GRADO: ${externalPrimaryPendingNames.join(', ')}`:''}`,
       }});
       await tx.enrollmentSubject.createMany({data:curriculumRows.map(s=>({enrollmentId:enrollment.id,studyPlanSubjectId:s.studyPlanSubjectId,origin:s.origin}))});
       if(condition===StudentCondition.MATERIA_PENDIENTE){
         const sourceAcademicYear=this.previousAcademicYearName(year.name);
-        for(const failed of manualFailedSubjects){
-          await tx.pendingSubject.create({data:{
-            enrollmentId:enrollment.id,
-            studyPlanSubjectId:failed.id,
-            sourceAcademicYear,
-            opportunities:{create:[
-              {sequence:1,label:'OCTUBRE'},
-              {sequence:2,label:'DICIEMBRE'},
-              {sequence:3,label:'FEBRERO'},
-              {sequence:4,label:'MARZO'},
-            ]},
-          }});
+        if(d.gradeLevel===1){
+          for(const subjectName of externalPrimaryPendingNames){
+            await tx.pendingSubject.create({data:{
+              enrollmentId:enrollment.id,
+              studyPlanSubjectId:null,
+              manualSubjectName:subjectName,
+              sourceLevel:'6° GRADO',
+              sourceAcademicYear,
+              opportunities:{create:[
+                {sequence:1,label:'OCTUBRE'},
+                {sequence:2,label:'DICIEMBRE'},
+                {sequence:3,label:'FEBRERO'},
+                {sequence:4,label:'MARZO'},
+              ]},
+            }});
+          }
+        }else{
+          for(const failed of manualFailedSubjects){
+            await tx.pendingSubject.create({data:{
+              enrollmentId:enrollment.id,
+              studyPlanSubjectId:failed.id,
+              sourceLevel:`${d.gradeLevel-1}° AÑO`,
+              sourceAcademicYear,
+              opportunities:{create:[
+                {sequence:1,label:'OCTUBRE'},
+                {sequence:2,label:'DICIEMBRE'},
+                {sequence:3,label:'FEBRERO'},
+                {sequence:4,label:'MARZO'},
+              ]},
+            }});
+          }
         }
       }
       if(d.heightCm!==undefined && d.weightGrams!==undefined){
@@ -407,12 +509,14 @@ export class EnrollmentService{
   }
 
   async reEnroll(d:ReEnrollDto){
-    await this.requireRepresentative(d.studentId);
+    await this.requireEnrollmentReadyStudent(d.studentId);
     const targetYear=await this.db.academicYear.findUniqueOrThrow({where:{id:d.targetAcademicYearId}});
+    if(targetYear.academicClosedAt) throw new BadRequestException(`El año escolar ${targetYear.name} ya fue finalizado académicamente y no admite reinscripciones`);
     const existing=await this.db.enrollment.findUnique({where:{studentId_academicYearId:{studentId:d.studentId,academicYearId:d.targetAcademicYearId}}});
     if(existing) throw new ConflictException('El estudiante ya está inscrito en el año escolar seleccionado');
     const previous=await this.previousEnrollmentFor(d.studentId,targetYear);
     if(!previous) throw new BadRequestException('No existe una matrícula anterior válida para reinscribir al estudiante');
+    if(!previous.academicYear.academicClosedAt) throw new BadRequestException(`El año escolar ${previous.academicYear.name} todavía no ha sido finalizado académicamente. La reinscripción se habilita después del cierre académico.`);
     const outcome=await this.buildOutcome(previous);
     if(!outcome.complete){
       const details=[
@@ -565,6 +669,7 @@ export class EnrollmentService{
 
   async withdraw(id:string,d:WithdrawDto){
     let e=await this.db.enrollment.findUniqueOrThrow({where:{id},include:{academicYear:true,section:true,curriculumSubjects:{where:{active:true}}}});
+    if(e.academicYear.academicClosedAt) throw new BadRequestException('No puede registrar un retiro después de finalizar académicamente el año escolar');
     if(e.condition===StudentCondition.RETIRADO || e.condition===StudentCondition.RETIRADO_MODIFICADO) throw new BadRequestException('El estudiante ya se encuentra retirado en esta matrícula');
     const wd=parseSchoolCalendarDate(d.withdrawalDate);
     const start=new Date(e.academicYear.startDate), end=new Date(e.academicYear.endDate);
@@ -606,10 +711,11 @@ export class EnrollmentService{
   }
 
   async reinstate(id:string,d:ReinstateDto){
-    await this.requireRepresentative((await this.db.enrollment.findUniqueOrThrow({where:{id},select:{studentId:true}})).studentId);
+    await this.requireEnrollmentReadyStudent((await this.db.enrollment.findUniqueOrThrow({where:{id},select:{studentId:true}})).studentId);
     let e=await this.db.enrollment.findUniqueOrThrow({where:{id},include:{
       student:true,academicYear:true,section:true,withdrawal:true,curriculumSubjects:{where:{active:true}},
     }});
+    if(e.academicYear.academicClosedAt) throw new BadRequestException('No puede reincorporar estudiantes después de finalizar académicamente el año escolar');
     if(e.condition!==StudentCondition.RETIRADO && e.condition!==StudentCondition.RETIRADO_MODIFICADO) throw new BadRequestException('Solo puede reincorporarse una matrícula que se encuentre RETIRADA');
     if(!e.withdrawal) throw new BadRequestException('La matrícula retirada no posee un registro de retiro asociado');
     const rd=parseSchoolCalendarDate(d.returnDate);

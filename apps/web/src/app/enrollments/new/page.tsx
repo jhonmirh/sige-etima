@@ -30,12 +30,36 @@ function idLabel(x: any) {
 
 function conditionDescription(condition: string, grade: number) {
   if (condition === 'MATERIA_PENDIENTE') {
+    if (grade === 1) return 'El estudiante ingresará a 1° AÑO y cursará todas las materias del plan, además de 1 o 2 materias pendientes provenientes de 6° GRADO.';
     return `El estudiante será promovido a ${grade}° AÑO y cursará todas las materias de ese grado, además de 1 o 2 materias pendientes de ${grade - 1}° AÑO.`;
   }
   if (condition === 'REPITIENTE') {
     return `El estudiante permanecerá en ${grade}° AÑO y cursará únicamente las materias reprobadas que seleccione.`;
   }
   return `El estudiante ingresará como REGULAR y cursará todas las materias correspondientes a ${grade}° AÑO.`;
+}
+
+function studentEnrollmentMissingFields(student: any) {
+  if (!student) return ['Estudiante'];
+  const required: [string, string][] = [
+    ['nationality', 'Nacionalidad'], ['identityNumber', 'Cédula'], ['firstName', 'Primer nombre'], ['lastName', 'Primer apellido'],
+    ['sex', 'Sexo'], ['birthDate', 'Fecha de nacimiento'], ['birthPlace', 'Lugar de nacimiento'], ['birthStateId', 'Estado de nacimiento'],
+    ['birthMunicipalityId', 'Municipio de nacimiento'], ['birthParishId', 'Parroquia de nacimiento'], ['address', 'Dirección completa'],
+    ['residenceStateId', 'Estado de residencia'], ['residenceMunicipalityId', 'Municipio de residencia'], ['residenceParishId', 'Parroquia de residencia'],
+    ['livingWith', 'Vive con'], ['phone', 'Teléfono'], ['email', 'Correo electrónico'],
+  ];
+  const missing = required.filter(([field]) => { const value = student?.[field]; return value === null || value === undefined || (typeof value === 'string' && !value.trim()); }).map(([, label]) => label);
+  if (student?.disability && !student?.disabilityDetails?.trim()) missing.push('Descripción de discapacidad');
+  if (student?.allergy && !student?.allergyDetails?.trim()) missing.push('Descripción de alergias');
+  return missing;
+}
+
+function representativeMissingFields(rep: any) {
+  const required: [string, string][] = [['nationality','Nacionalidad'],['identityNumber','Cédula'],['firstName','Primer nombre'],['lastName','Primer apellido'],['address','Dirección'],['birthDate','Fecha de nacimiento'],['phone1','Teléfono principal']];
+  const missing = required.filter(([field]) => { const value = rep?.[field]; return value === null || value === undefined || (typeof value === 'string' && !value.trim()); }).map(([, label]) => label);
+  const age = rep?.birthDate ? calculateAge(String(rep.birthDate).slice(0, 10)) : null;
+  if (age === null || age < 18) missing.push('Edad mínima 18 años');
+  return missing;
 }
 
 export default function NewEnrollment() {
@@ -57,6 +81,7 @@ export default function NewEnrollment() {
   const [recordedGrade, setRecordedGrade] = useState<number | null>(null);
   const [entryCondition, setEntryCondition] = useState('REGULAR');
   const [failedSubjectIds, setFailedSubjectIds] = useState<string[]>([]);
+  const [manualPendingSubjectNames, setManualPendingSubjectNames] = useState<string[]>(['', '']);
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -96,18 +121,17 @@ export default function NewEnrollment() {
   }, [grade, recordedLiteral]);
 
   useEffect(() => {
-    if (entryCondition === 'MATERIA_PENDIENTE' && grade === 1) setEntryCondition('REGULAR');
     setFailedSubjectIds([]);
+    setManualPendingSubjectNames(['', '']);
   }, [entryCondition, grade, planId]);
 
   const plan = plans.find((x) => x.id === planId);
   const activeMentions = plan?.mentions || [];
   const activeLinkedRepresentatives = (student?.representatives || []).filter((x: any) => x.representative?.active !== false);
-  const hasRep = activeLinkedRepresentatives.some((x: any) => {
-    const value = x.representative?.birthDate ? String(x.representative.birthDate).slice(0, 10) : '';
-    const repAge = calculateAge(value);
-    return repAge !== null && repAge >= 18;
-  });
+  const completeRepresentativeLinks = activeLinkedRepresentatives.filter((x: any) => representativeMissingFields(x.representative).length === 0);
+  const hasRep = completeRepresentativeLinks.length > 0;
+  const studentProfileMissing = studentEnrollmentMissingFields(student);
+  const studentProfileComplete = !!student && studentProfileMissing.length === 0;
   const studentAge = student?.birthDate ? calculateAge(String(student.birthDate).slice(0, 10)) : null;
   const validStudentAge = studentAge !== null && studentAge >= 10;
   const hasInstitutionHistory = (student?.enrollments?.length || 0) > 0;
@@ -126,8 +150,11 @@ export default function NewEnrollment() {
     return plan.subjects.filter((x: any) => x.active !== false && Number(x.gradeLevel) === sourceGrade);
   }, [plan, entryCondition, grade]);
 
+  const normalizedManualPendingNames = manualPendingSubjectNames.map((x) => x.trim()).filter(Boolean);
+  const uniqueManualPendingNames = Array.from(new Set(normalizedManualPendingNames.map((x) => x.toLocaleUpperCase('es-VE'))));
   const manualConditionValid =
     entryCondition === 'REGULAR' ||
+    (entryCondition === 'MATERIA_PENDIENTE' && grade === 1 && uniqueManualPendingNames.length >= 1 && uniqueManualPendingNames.length <= 2) ||
     (entryCondition === 'MATERIA_PENDIENTE' && grade > 1 && failedSubjectIds.length >= 1 && failedSubjectIds.length <= 2) ||
     (entryCondition === 'REPITIENTE' && failedSubjectIds.length > 2);
 
@@ -137,8 +164,8 @@ export default function NewEnrollment() {
     e.preventDefault();
     setErr('');
     try {
-      const rows: any[] = await api(`/students?search=${encodeURIComponent(identity)}&active=true`);
-      const exact = rows.find((x) => x.identityNumber === identity && x.nationality === nationality);
+      const rows: any[] = await api(`/students?search=${encodeURIComponent(identity)}`);
+      const exact = rows.find((x) => x.active !== false && x.identityNumber === identity && x.nationality === nationality);
       if (!exact) throw new Error('No se encontró un estudiante activo con esa nacionalidad y cédula');
       const loaded: any = await api(`/students/${exact.id}`);
       setStudent(loaded);
@@ -150,6 +177,7 @@ export default function NewEnrollment() {
       setRecordedGrade(latest?.gradeLevel ? Number(latest.gradeLevel) : null);
       setEntryCondition('REGULAR');
       setFailedSubjectIds([]);
+      setManualPendingSubjectNames(['', '']);
     } catch (e: any) {
       setStudent(null);
       setLastApprovedYear('');
@@ -158,6 +186,7 @@ export default function NewEnrollment() {
       setRecordedGrade(null);
       setEntryCondition('REGULAR');
       setFailedSubjectIds([]);
+      setManualPendingSubjectNames(['', '']);
       setErr(e.message);
     }
   }
@@ -173,7 +202,8 @@ export default function NewEnrollment() {
 
     if (!student) issues.push('Debe buscar y seleccionar un estudiante registrado.');
     if (student && !validStudentAge) issues.push('El estudiante debe tener al menos 10 años cumplidos.');
-    if (!hasRep) issues.push('Debe vincular al menos un representante activo, con fecha de nacimiento registrada y 18 años o más.');
+    if (student && !studentProfileComplete) issues.push(`Debe completar la ficha integral del estudiante: ${studentProfileMissing.join(', ')}.`);
+    if (!hasRep) issues.push('Debe vincular al menos un representante activo, adulto y con sus datos obligatorios completos.');
     if (hasInstitutionHistory) issues.push('El estudiante ya tiene historial en ETIMA; corresponde utilizar Reinscripción.');
     if (!yearId) issues.push('Debe seleccionar el año escolar.');
     if (!planId) issues.push('Debe seleccionar el plan de estudio.');
@@ -183,8 +213,9 @@ export default function NewEnrollment() {
     if (!lastApprovedYear) issues.push('Debe indicar el último año aprobado.');
     if (grade === 1 && !literal) issues.push('El literal A, B, C o D es obligatorio para ingreso a 1° AÑO.');
     if (missingOriginSchool) issues.push('Debe registrar el plantel de procedencia en la ficha del estudiante.');
+    if (entryCondition === 'MATERIA_PENDIENTE' && grade === 1 && normalizedManualPendingNames.length !== uniqueManualPendingNames.length) issues.push('Las materias pendientes de 6° GRADO no pueden estar repetidas.');
     if (!manualConditionValid) issues.push(entryCondition === 'MATERIA_PENDIENTE'
-      ? 'MATERIA PENDIENTE requiere seleccionar 1 o 2 materias del año inmediatamente anterior.'
+      ? (grade === 1 ? 'MATERIA PENDIENTE para ingreso a 1° AÑO requiere registrar por nombre 1 o 2 materias pendientes provenientes de 6° GRADO.' : 'MATERIA PENDIENTE requiere seleccionar 1 o 2 materias del año inmediatamente anterior.')
       : 'REPITIENTE requiere seleccionar más de 2 materias reprobadas del mismo año.');
 
     const meters = Number(f.get('meters') || 0);
@@ -225,6 +256,7 @@ Si se trata de una corrección de primera matrícula puede continuar, pero confi
         literal: grade === 1 ? literal : undefined,
         condition: entryCondition,
         failedSubjectIds: failedSubjectIds.length ? failedSubjectIds : undefined,
+        manualPendingSubjectNames: entryCondition === 'MATERIA_PENDIENTE' && grade === 1 ? uniqueManualPendingNames : undefined,
         heightCm,
         weightGrams,
         shirtSize: f.get('shirtSize') || undefined,
@@ -269,11 +301,12 @@ Si se trata de una corrección de primera matrícula puede continuar, pero confi
           <div className="section-head"><div><h2>2. Estudiante</h2><p>Verifique la identidad, procedencia y representante antes de continuar.</p></div><span className="step-pill">2</span></div>
           <div className="student-reenroll-head">
             <div className="avatar-lg">{student.firstName[0]}{student.lastName[0]}</div>
-            <div><h3>{[student.firstName, student.middleName, student.lastName, student.secondLastName].filter(Boolean).join(' ')}</h3><p>{idLabel(student)} · {student.address}</p><p className="muted">Plantel de procedencia: <strong>{student.originSchool || 'SIN REGISTRAR'}</strong></p></div>
+            <div><h3>{[student.firstName, student.middleName, student.lastName, student.secondLastName].filter(Boolean).join(' ')}</h3><p>{idLabel(student)} · {studentAge === null ? 'EDAD SIN CALCULAR' : `${studentAge} AÑOS`} · {student.sex || 'SEXO SIN REGISTRAR'}</p><p className="muted">{student.phone || 'TELÉFONO SIN REGISTRAR'} · {student.email || 'CORREO SIN REGISTRAR'}</p><p className="muted">Dirección: <strong>{student.address || 'SIN REGISTRAR'}</strong> · Plantel de procedencia: <strong>{student.originSchool || 'SIN REGISTRAR'}</strong></p><p className="muted">Representante: <strong>{completeRepresentativeLinks[0]?.representative ? `${completeRepresentativeLinks[0].representative.firstName} ${completeRepresentativeLinks[0].representative.lastName}` : 'SIN REPRESENTANTE ADULTO COMPLETO'}</strong></p></div>
             <Link className="btn secondary" href={`/students/${student.id}/edit`}>Actualizar ficha</Link>
           </div>
+          {!studentProfileComplete && <div className="warning-banner"><TriangleAlert size={20} /><div><strong>Ficha integral incompleta</strong><span>No se puede matricular, reincorporar ni reinscribir hasta completar: {studentProfileMissing.join(', ')}.</span></div><Link className="btn secondary" href={`/students/${student.id}/edit`}>Completar ficha</Link></div>}
           {!validStudentAge && <div className="warning-banner"><TriangleAlert size={20} /><div><strong>Edad del estudiante no válida</strong><span>La matrícula exige una edad mínima de 10 años cumplidos. Corrija la fecha de nacimiento en la ficha integral.</span></div><Link className="btn secondary" href={`/students/${student.id}/edit`}>Corregir fecha</Link></div>}
-          {!hasRep && <div className="warning-banner"><div><strong>Falta representante adulto válido</strong><span>No es posible formalizar matrícula sin al menos un representante activo, con fecha de nacimiento registrada y 18 años o más.</span></div><div className="row-actions"><Link className="btn secondary" href={`/students/${student.id}/representatives/link`}>Asignar existente</Link><Link className="btn" href={`/representatives/new?studentId=${student.id}`}>Crear representante</Link></div></div>}
+          {!hasRep && <div className="warning-banner"><div><strong>Falta representante adulto válido</strong><span>No es posible formalizar matrícula sin al menos un representante activo, con 18 años o más y sus datos obligatorios completos.</span></div><div className="row-actions"><Link className="btn secondary" href={`/students/${student.id}/representatives/link`}>Asignar existente</Link><Link className="btn" href={`/representatives/new?studentId=${student.id}`}>Crear representante</Link></div></div>}
           {hasInstitutionHistory && <div className="warning-banner"><TriangleAlert size={20} /><div><strong>Este estudiante ya posee historial en ETIMA.</strong><span>No corresponde Primera matrícula. Utilice Reinscripción para que la condición REGULAR, MATERIA PENDIENTE o REPITIENTE provenga automáticamente de las definitivas del sistema.</span></div><Link className="btn secondary" href="/enrollments/reenroll">Ir a Reinscripción</Link></div>}
         </section>
 
@@ -299,7 +332,7 @@ Si se trata de una corrección de primera matrícula puede continuar, pero confi
           <div className="section-head"><div><h2>4. Condición académica de ingreso</h2><p>Solo aplica de forma manual a estudiantes provenientes de otro plantel. Para estudiantes de ETIMA, Reinscripción obtiene esta condición automáticamente desde Notas / Definitiva.</p></div><span className="step-pill">4</span></div>
           <div className="form-grid cols-3">
             <div><label>Procedencia académica</label><div className="input read-only">OTRO PLANTEL / PRIMER INGRESO A ETIMA</div></div>
-            <div><label>Condición de ingreso *</label><select className="input" value={entryCondition} onChange={(e) => setEntryCondition(e.target.value)}><option value="REGULAR">REGULAR</option><option value="MATERIA_PENDIENTE" disabled={grade === 1}>MATERIA PENDIENTE</option><option value="REPITIENTE">REPITIENTE</option></select></div>
+            <div><label>Condición de ingreso *</label><select className="input" value={entryCondition} onChange={(e) => setEntryCondition(e.target.value)}><option value="REGULAR">REGULAR</option><option value="MATERIA_PENDIENTE">MATERIA PENDIENTE</option><option value="REPITIENTE">REPITIENTE</option></select></div>
             <div><label>Plantel de procedencia *</label><div className="input read-only">{student.originSchool || 'SIN REGISTRAR'}</div></div>
           </div>
 
@@ -311,12 +344,20 @@ Si se trata de una corrección de primera matrícula puede continuar, pero confi
           {missingOriginSchool && <div className="warning-banner"><TriangleAlert size={20} /><div><strong>Debe registrar el plantel de procedencia.</strong><span>En una primera matrícula debe quedar identificado el plantel de procedencia, tanto para REGULAR como para MATERIA PENDIENTE o REPITIENTE.</span></div><Link className="btn secondary" href={`/students/${student.id}/edit`}>Actualizar ficha</Link></div>}
 
           {entryCondition !== 'REGULAR' && <>
-            <div className="section-title" style={{ marginTop: 20 }}><div><h3>{entryCondition === 'MATERIA_PENDIENTE' ? `Materias pendientes de ${grade - 1}° AÑO` : `Materias reprobadas de ${grade}° AÑO`}</h3><p className="muted">{entryCondition === 'MATERIA_PENDIENTE' ? 'Seleccione 1 o 2. El sistema agregará estas materias al plan completo del nuevo grado.' : 'Seleccione más de 2. El estudiante cursará únicamente las materias seleccionadas.'}</p></div></div>
-            {availableFailedSubjects.length === 0 ? <div className="warning-banner"><div><strong>No hay materias configuradas para seleccionar.</strong><span>Revise el plan de estudio y el grado correspondiente.</span></div></div> : <div className="curriculum-grid">{availableFailedSubjects.map((s: any) => {
-              const checked = failedSubjectIds.includes(s.id);
-              return <label className={`curriculum-card ${checked ? 'selected' : ''}`} key={s.id} style={{ cursor: 'pointer' }}><input type="checkbox" checked={checked} onChange={() => toggleFailedSubject(s.id)} /><BookOpenCheck size={18} /><div><strong>{s.subject?.name || 'MATERIA'}</strong><span>{s.gradeLevel}° AÑO · {checked ? 'SELECCIONADA' : 'SELECCIONAR'}</span></div></label>;
-            })}</div>}
-            <p className="info-note">Seleccionadas: <strong>{failedSubjectIds.length}</strong>{entryCondition === 'MATERIA_PENDIENTE' ? ' · permitido: 1 a 2' : ' · requerido: más de 2'}</p>
+            <div className="section-title" style={{ marginTop: 20 }}><div><h3>{entryCondition === 'MATERIA_PENDIENTE' ? (grade === 1 ? 'Materias pendientes provenientes de 6° GRADO' : `Materias pendientes de ${grade - 1}° AÑO`) : `Materias reprobadas de ${grade}° AÑO`}</h3><p className="muted">{entryCondition === 'MATERIA_PENDIENTE' ? (grade === 1 ? 'Registre exactamente 1 o 2 materias según la boleta o certificación del plantel de procedencia. Estas materias no se confunden con el plan 31059/41049.' : 'Seleccione 1 o 2. El sistema agregará estas materias al plan completo del nuevo grado.') : 'Seleccione más de 2. El estudiante cursará únicamente las materias seleccionadas.'}</p></div></div>
+            {entryCondition === 'MATERIA_PENDIENTE' && grade === 1 ? (
+              <div className="form-grid cols-2">
+                <div><label>Materia pendiente 1 *</label><input className="input" value={manualPendingSubjectNames[0] || ''} maxLength={120} onChange={(e) => setManualPendingSubjectNames([e.target.value.toLocaleUpperCase('es-VE'), manualPendingSubjectNames[1] || ''])} placeholder="NOMBRE DE LA MATERIA" /></div>
+                <div><label>Materia pendiente 2 (opcional)</label><input className="input" value={manualPendingSubjectNames[1] || ''} maxLength={120} onChange={(e) => setManualPendingSubjectNames([manualPendingSubjectNames[0] || '', e.target.value.toLocaleUpperCase('es-VE')])} placeholder="NOMBRE DE LA MATERIA" /></div>
+                <div className="span-2 info-note">Origen académico: <strong>6° GRADO · OTRO PLANTEL</strong> · Registradas: <strong>{uniqueManualPendingNames.length}</strong> · permitido: 1 a 2.</div>
+              </div>
+            ) : <>
+              {availableFailedSubjects.length === 0 ? <div className="warning-banner"><div><strong>No hay materias configuradas para seleccionar.</strong><span>Revise el plan de estudio y el grado correspondiente.</span></div></div> : <div className="curriculum-grid">{availableFailedSubjects.map((s: any) => {
+                const checked = failedSubjectIds.includes(s.id);
+                return <label className={`curriculum-card ${checked ? 'selected' : ''}`} key={s.id} style={{ cursor: 'pointer' }}><input type="checkbox" checked={checked} onChange={() => toggleFailedSubject(s.id)} /><BookOpenCheck size={18} /><div><strong>{s.subject?.name || 'MATERIA'}</strong><span>{s.gradeLevel}° AÑO · {checked ? 'SELECCIONADA' : 'SELECCIONAR'}</span></div></label>;
+              })}</div>}
+              <p className="info-note">Seleccionadas: <strong>{failedSubjectIds.length}</strong>{entryCondition === 'MATERIA_PENDIENTE' ? ' · permitido: 1 a 2' : ' · requerido: más de 2'}</p>
+            </>}
           </>}
         </section>
 

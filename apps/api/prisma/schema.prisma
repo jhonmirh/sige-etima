@@ -216,6 +216,8 @@ model AcademicYear {
   startDate DateTime
   endDate DateTime
   enrollmentCloseDate DateTime?
+  academicClosedAt DateTime?
+  academicClosedBy String?
   active Boolean @default(false)
   contributionAmount Decimal @db.Decimal(12,2)
   sections Section[]
@@ -701,13 +703,18 @@ model PendingSubject {
   id String @id @default(uuid())
   enrollmentId String
   enrollment Enrollment @relation(fields:[enrollmentId], references:[id], onDelete:Cascade)
-  studyPlanSubjectId String
-  studyPlanSubject StudyPlanSubject @relation(fields:[studyPlanSubjectId], references:[id])
+  studyPlanSubjectId String?
+  studyPlanSubject StudyPlanSubject? @relation(fields:[studyPlanSubjectId], references:[id])
+  // Para materias pendientes que provienen de 6° grado u otro currículo externo
+  // y no existen dentro del plan 31059/41049 de educación media.
+  manualSubjectName String?
+  sourceLevel String?
   sourceAcademicYear String
   status PendingStatus @default(ABIERTA)
   opportunities PendingOpportunity[]
   reviewAttempts ReviewAttempt[]
   @@unique([enrollmentId, studyPlanSubjectId, sourceAcademicYear])
+  @@index([enrollmentId, manualSubjectName])
 }
 
 model PendingOpportunity {
