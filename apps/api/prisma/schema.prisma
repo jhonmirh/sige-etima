@@ -396,6 +396,12 @@ model StudyPlan {
   code String
   name String
   modality EducationModality
+  specialtyName String?
+  optionName String?
+  hasMention Boolean @default(false)
+  officialCatalog Boolean @default(false)
+  sourceReference String?
+  curriculumVerified Boolean @default(false)
   maxGrade Int
   titleName String
   active Boolean @default(true)

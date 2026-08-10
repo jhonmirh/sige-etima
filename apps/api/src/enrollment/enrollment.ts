@@ -45,10 +45,6 @@ const PHONE_REGEX=/^\d{10,15}$/;
 const GARMENT_SIZES=['10','11','12','13','14','15','16','S','M','L','XL','2XL','3XL'];
 const ENTRY_LITERALS=['A','B','C','D'];
 const EXTERNAL_ENTRY_CONDITIONS: StudentCondition[]=[StudentCondition.REGULAR,StudentCondition.MATERIA_PENDIENTE,StudentCondition.REPITIENTE];
-const LAST_APPROVED_BY_PLAN:Record<string,string[]>={
-  '31059':['6° GRADO','1° AÑO','2° AÑO','3° AÑO','4° AÑO'],
-  '41049':['6° GRADO','1° AÑO','2° AÑO','3° AÑO','4° AÑO','5° AÑO'],
-};
 
 class EnrollDto{
   @IsString() studentId!:string;
@@ -102,6 +98,11 @@ export class EnrollmentService{
   constructor(private db:PrismaService){}
 
   private normalizeUpper(value?:string|null){return value?.trim()?value.trim().replace(/\s+/g,' ').toLocaleUpperCase('es-VE'):undefined}
+
+  private allowedLastApprovedYears(plan:any){
+    const maxGrade=Math.max(1,Number(plan?.maxGrade||1));
+    return ['6° GRADO',...Array.from({length:Math.max(0,maxGrade-1)},(_,i)=>`${i+1}° AÑO`)];
+  }
 
   private readonly activeAcademicConditions:StudentCondition[]=[StudentCondition.REGULAR,StudentCondition.MATERIA_PENDIENTE,StudentCondition.REPITIENTE];
 
@@ -339,7 +340,7 @@ export class EnrollmentService{
         academicYearId:targetAcademicYearId,
         studyPlanId:previous.studyPlanId,
         gradeLevel:outcome.decision.targetGradeLevel,
-        mentionId:previous.section.mentionId ?? null,
+        ...(previous.studyPlan.hasMention ? {mentionId:previous.section.mentionId ?? undefined} : {}),
       },
       include:{mention:true},
       orderBy:{name:'asc'},
@@ -390,16 +391,18 @@ export class EnrollmentService{
     ]);
     if(year.academicClosedAt) throw new BadRequestException(`El año escolar ${year.name} ya fue finalizado académicamente y no admite nuevas matrículas`);
     if(!student.active) throw new BadRequestException('El estudiante está inactivo');
+    if(!plan.active) throw new BadRequestException(`El plan ${plan.code} no está activado para esta institución`);
     if(ageOnDate(student.birthDate)<10) throw new BadRequestException('El estudiante debe tener al menos 10 años cumplidos para formalizar la matrícula');
     if(section.academicYearId!==d.academicYearId || section.studyPlanId!==d.studyPlanId || section.gradeLevel!==d.gradeLevel) throw new BadRequestException('Sección incompatible con año, plan o grado');
-    if(!section.mentionId) throw new BadRequestException('La sección debe tener una mención académica configurada');
+    if(plan.hasMention && !section.mentionId) throw new BadRequestException('La sección debe tener una mención académica configurada');
+    if(!plan.hasMention && section.mentionId) throw new BadRequestException('La sección pertenece a un plan sin mención y no debe tener una mención asociada');
     if(!d.registrationDate) throw new BadRequestException('La fecha de inscripción es obligatoria');
     if(d.heightCm===undefined || d.weightGrams===undefined) throw new BadRequestException('La estatura y el peso son obligatorios para formalizar la primera matrícula');
     const normalizedLastApproved=this.normalizeUpper(d.lastApprovedYear);
     if(!normalizedLastApproved) throw new BadRequestException('Debe indicar el último año aprobado');
     if(d.gradeLevel===1 && !d.literal) throw new BadRequestException('El literal de ingreso es obligatorio para 1° AÑO');
-    const allowedLastApproved=LAST_APPROVED_BY_PLAN[plan.code];
-    if(normalizedLastApproved && allowedLastApproved && !allowedLastApproved.includes(normalizedLastApproved)) throw new BadRequestException(`Último año aprobado inválido para el plan ${plan.code}`);
+    const allowedLastApproved=this.allowedLastApprovedYears(plan);
+    if(normalizedLastApproved && !allowedLastApproved.includes(normalizedLastApproved)) throw new BadRequestException(`Último año aprobado inválido para el plan ${plan.code}`);
     if(d.gradeLevel>1 && d.literal) throw new BadRequestException('El literal solo se permite en la inscripción de 1° año');
     const existing=await this.db.enrollment.findUnique({where:{studentId_academicYearId:{studentId:d.studentId,academicYearId:d.academicYearId}}});
     if(existing) throw new ConflictException('El estudiante ya posee matrícula en este año escolar');
@@ -528,7 +531,7 @@ export class EnrollmentService{
     if(outcome.decision.graduationEligible) throw new BadRequestException('El estudiante aprobó el último grado del plan y es elegible para graduación; no corresponde reinscripción al siguiente año.');
     const section=await this.db.section.findUniqueOrThrow({where:{id:d.sectionId}});
     if(section.academicYearId!==d.targetAcademicYearId || section.studyPlanId!==previous.studyPlanId || section.gradeLevel!==outcome.decision.targetGradeLevel) throw new BadRequestException('La sección seleccionada no corresponde al año, plan o grado calculado por la definitiva');
-    if((section.mentionId||null)!==(previous.section.mentionId||null)) throw new BadRequestException('La reinscripción ordinaria debe conservar la misma mención del plan de estudio. Un cambio de mención requiere un procedimiento administrativo especial.');
+    if(previous.studyPlan.hasMention && (section.mentionId||null)!==(previous.section.mentionId||null)) throw new BadRequestException('La reinscripción ordinaria debe conservar la misma mención del plan de estudio. Un cambio de mención requiere un procedimiento administrativo especial.');
     const subjects=await this.subjectsForNext(previous,outcome);
     if(!subjects.length) throw new BadRequestException('No existen materias a cursar según la definitiva del año anterior');
     const date=parseSchoolCalendarDate(d.registrationDate);

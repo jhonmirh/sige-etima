@@ -1,5 +1,6 @@
 import { PrismaClient, Role, EducationModality, GradingType, Nationality } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { OFFICIAL_STUDY_PLAN_CATALOG, GENERAL_31059_CURRICULUM, GENERAL_31060_CURRICULUM, technicalCurriculum, CurriculumRow } from '../src/academic/official-plan-catalog';
 const db = new PrismaClient();
 
 const states = [
@@ -105,89 +106,65 @@ async function main(){
   const hash=await bcrypt.hash(adminPassword,12);
   await db.user.upsert({where:{email:adminEmail}, update:{active:true,role:Role.ADMIN}, create:{email:adminEmail,passwordHash:hash,role:Role.ADMIN}});
 
-  const general=await db.studyPlan.upsert({
-    where:{code_effectiveFrom:{code:'31059',effectiveFrom:new Date('2021-09-01')}},
-    update:{active:true},
-    create:{code:'31059',name:'Plan de estudio Bachiller',modality:EducationModality.MEDIA_GENERAL,maxGrade:5,titleName:'Bachiller',effectiveFrom:new Date('2021-09-01')}
-  });
-  const technical=await db.studyPlan.upsert({
-    where:{code_effectiveFrom:{code:'41049',effectiveFrom:new Date('2021-09-01')}},
-    update:{active:true},
-    create:{code:'41049',name:'Técnicos Profesionales en Agropecuaria - Ciencias Agrícolas y Pecuarias',modality:EducationModality.MEDIA_TECNICA,maxGrade:6,titleName:'Técnico Profesional en Agropecuaria, mención Ciencias Agrícolas y Pecuarias',effectiveFrom:new Date('2021-09-01')}
-  });
-
-  // Catálogo inicial de menciones por modalidad y plan de estudio.
-  // Media General (31059) -> BACHILLER.
-  // Media Técnica (41049) -> CIENCIAS AGRÍCOLAS Y PECUARIAS.
-  let generalMention=await db.mention.findUnique({
-    where:{studyPlanId_name:{studyPlanId:general.id,name:'BACHILLER'}}
-  });
-  if(!generalMention){
-    generalMention=await db.mention.create({
-      data:{studyPlanId:general.id,name:'BACHILLER',active:true}
-    });
-  } else if(!generalMention.active){
-    generalMention=await db.mention.update({where:{id:generalMention.id},data:{active:true}});
-  }
-
-  let technicalMention=await db.mention.findUnique({
-    where:{studyPlanId_name:{studyPlanId:technical.id,name:'CIENCIAS AGRÍCOLAS Y PECUARIAS'}}
-  });
-  if(!technicalMention){
-    technicalMention=await db.mention.create({
-      data:{studyPlanId:technical.id,name:'CIENCIAS AGRÍCOLAS Y PECUARIAS',active:true}
-    });
-  } else if(!technicalMention.active){
-    technicalMention=await db.mention.update({where:{id:technicalMention.id},data:{active:true}});
-  }
-
-  const generalRows:any[]=[
-    ['31059-CAS','Castellano',[4,4,4,4,4]],
-    ['31059-ING','Inglés y otras lenguas extranjeras',[6,6,6,4,4]],
-    ['31059-MAT','Matemáticas',[4,4,4,4,4]],
-    ['31059-EFI','Educación Física',[6,6,6,6,6]],
-    ['31059-ART','Arte y Patrimonio',[4,4,null,null,null]],
-    ['31059-CNA','Ciencias Naturales',[6,6,null,null,null]],
-    ['31059-FIS','Física',[null,null,4,4,4]],
-    ['31059-QUI','Química',[null,null,4,4,4]],
-    ['31059-BIO','Biología',[null,null,4,4,4]],
-    ['31059-CTI','Ciencias de la Tierra',[null,null,null,null,2]],
-    ['31059-GHC','Geografía, Historia y Ciudadanía',[6,6,6,4,4]],
-    ['31059-FSN','Formación para la Soberanía Nacional',[null,null,null,2,2]],
-    ['31059-ORI','Orientación y Convivencia',[2,2,2,2,2],GradingType.ORIENTATION_LETTER],
-    ['31059-GRP','Participación en los grupos de creación, recreación y producción',[6,6,6,6,6]]
-  ];
-  for (let i=0;i<generalRows.length;i++){
-    const [code,name,hours,gt]=generalRows[i]; const s=await subject(code,name,gt||GradingType.NUMERIC);
-    for(let g=1;g<=5;g++) if(hours[g-1]!=null) await db.studyPlanSubject.upsert({
-      where:{studyPlanId_subjectId_gradeLevel:{studyPlanId:general.id,subjectId:s.id,gradeLevel:g}},
-      update:{weeklyHours:hours[g-1],sortOrder:i},
-      create:{studyPlanId:general.id,subjectId:s.id,gradeLevel:g,weeklyHours:hours[g-1],sortOrder:i}
-    });
-  }
-
-  const techRows:any[]=[
-    ['41049-LYL','Lengua y Literatura',[3,3,4,4,4,null],'FORMACIÓN GENERAL'],
-    ['41049-MAT','Matemática',[4,4,4,4,4,null],'FORMACIÓN GENERAL'],
-    ['41049-IDI','Idiomas',[3,3,4,4,4,null],'FORMACIÓN GENERAL'],
-    ['41049-EFI','Educación Física',[2,2,2,null,null,null],'FORMACIÓN GENERAL'],
-    ['41049-BAT','Biología, Ambiente y Tecnología',[4,4,8,8,8,null],'FORMACIÓN GENERAL'],
-    ['41049-GHS','Geografía, Historia y Soberanía Nacional',[4,4,2,2,2,null],'FORMACIÓN GENERAL'],
-    ['41049-PES','Proyecto de Economía Socioproductiva y Tecnología (común a todas las especialidades y menciones)',[8,8,8,8,8,null],'FORMACIÓN CIENTÍFICA, TECNOLÓGICA Y PRODUCTIVA'],
-    ['41049-AFM','Área de formación relacionada con la mención',[8,8,8,10,10,null],'FORMACIÓN CIENTÍFICA, TECNOLÓGICA Y PRODUCTIVA'],
-    ['41049-OVS','Orientación y Vinculación Sociolaboral',[4,4,2,2,2,null],'PRÁCTICA VOCACIONAL Y PROFESIONAL'],
-    ['41049-PRA','Práctica Profesional',[null,null,null,null,null,null],'PRÁCTICA VOCACIONAL Y PROFESIONAL',1440]
-  ];
-  for(let i=0;i<techRows.length;i++){
-    const [code,name,hours,component,annualHours]=techRows[i]; const s=await subject(code,name);
-    for(let g=1;g<=6;g++){
-      if(g===6 && code==='41049-PRA'){
-        await db.studyPlanSubject.upsert({where:{studyPlanId_subjectId_gradeLevel:{studyPlanId:technical.id,subjectId:s.id,gradeLevel:6}},update:{annualHours:1440,component,sortOrder:i},create:{studyPlanId:technical.id,subjectId:s.id,gradeLevel:6,annualHours:1440,component,sortOrder:i}})
-      } else if(hours[g-1]!=null) {
-        await db.studyPlanSubject.upsert({where:{studyPlanId_subjectId_gradeLevel:{studyPlanId:technical.id,subjectId:s.id,gradeLevel:g}},update:{weeklyHours:hours[g-1],component,sortOrder:i},create:{studyPlanId:technical.id,subjectId:s.id,gradeLevel:g,weeklyHours:hours[g-1],component,sortOrder:i}})
+  async function seedPlanCurriculum(plan:any, rows:CurriculumRow[]){
+    for(let i=0;i<rows.length;i++){
+      const row=rows[i];
+      const gradingType=row.gradingType==='ORIENTATION_LETTER'?GradingType.ORIENTATION_LETTER:GradingType.NUMERIC;
+      const s=await subject(`${plan.code}-${row.suffix}`,row.name,gradingType);
+      for(let g=1;g<=plan.maxGrade;g++){
+        const weekly=row.hours[g-1]??null;
+        const annual=g===6?row.annualHoursAtSixth??null:null;
+        if(weekly===null && annual===null) continue;
+        await db.studyPlanSubject.upsert({
+          where:{studyPlanId_subjectId_gradeLevel:{studyPlanId:plan.id,subjectId:s.id,gradeLevel:g}},
+          update:{weeklyHours:weekly,annualHours:annual,component:row.component,sortOrder:i,active:true},
+          create:{studyPlanId:plan.id,subjectId:s.id,gradeLevel:g,weeklyHours:weekly,annualHours:annual,component:row.component,sortOrder:i,active:true},
+        });
       }
     }
   }
+
+  const planByCode=new Map<string,any>();
+  for(const template of OFFICIAL_STUDY_PLAN_CATALOG){
+    const effectiveFrom=template.code==='31059'?new Date('2017-08-24'):template.code==='31060'?new Date('2023-10-19'):new Date('2023-10-20');
+    const modality=template.modality==='MEDIA_TECNICA'?EducationModality.MEDIA_TECNICA:EducationModality.MEDIA_GENERAL;
+    const desiredActive=template.code==='31059' || template.code==='41049';
+    const existing=await db.studyPlan.findFirst({where:{code:template.code},orderBy:{effectiveFrom:'desc'}});
+    const plan=existing
+      ? await db.studyPlan.update({where:{id:existing.id},data:{
+          name:template.optionName,modality,specialtyName:template.specialtyName,optionName:template.optionName,hasMention:template.hasMention,
+          officialCatalog:true,sourceReference:template.sourceReference,curriculumVerified:true,maxGrade:template.maxGrade,titleName:template.titleName,
+        }})
+      : await db.studyPlan.create({data:{
+          code:template.code,name:template.optionName,modality,specialtyName:template.specialtyName,optionName:template.optionName,hasMention:template.hasMention,
+          officialCatalog:true,sourceReference:template.sourceReference,curriculumVerified:true,maxGrade:template.maxGrade,titleName:template.titleName,
+          active:desiredActive,effectiveFrom,
+        }});
+    planByCode.set(template.code,plan);
+
+    if(template.hasMention && template.mentionName){
+      const mentionName=template.mentionName.toLocaleUpperCase('es-VE');
+      const mention=await db.mention.findUnique({where:{studyPlanId_name:{studyPlanId:plan.id,name:mentionName}}});
+      if(!mention) await db.mention.create({data:{studyPlanId:plan.id,name:mentionName,active:true}});
+    }
+
+    const rows=template.code==='31059'
+      ? GENERAL_31059_CURRICULUM
+      : template.code==='31060'
+        ? GENERAL_31060_CURRICULUM
+        : technicalCurriculum(template.optionName);
+    await seedPlanCurriculum(plan,rows);
+  }
+
+  const general=planByCode.get('31059');
+  const technical=planByCode.get('41049');
+  if(!general || !technical) throw new Error('No fue posible cargar los planes institucionales 31059/41049');
+
+  // Compatibilidad con datos creados antes de que BACHILLER se tratara como plan sin mención.
+  let generalMention=await db.mention.findUnique({where:{studyPlanId_name:{studyPlanId:general.id,name:'BACHILLER'}}});
+  if(!generalMention) generalMention=await db.mention.create({data:{studyPlanId:general.id,name:'BACHILLER',active:true}});
+  let technicalMention=await db.mention.findUnique({where:{studyPlanId_name:{studyPlanId:technical.id,name:'CIENCIAS AGRÍCOLAS Y PECUARIAS'}}});
+  if(!technicalMention) technicalMention=await db.mention.create({data:{studyPlanId:technical.id,name:'CIENCIAS AGRÍCOLAS Y PECUARIAS',active:true}});
 
   const year=await db.academicYear.upsert({where:{name:'2026-2027'},update:{},create:{name:'2026-2027',startDate:new Date('2026-10-01'),endDate:new Date('2027-08-31'),enrollmentCloseDate:new Date('2026-10-31T23:59:59'),active:true,contributionAmount:0}});
   await db.gradingPolicy.upsert({where:{academicYearId:year.id},update:{},create:{academicYearId:year.id}});

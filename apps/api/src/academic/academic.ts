@@ -1,6 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Injectable, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
-import { IsBoolean, IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
-import { EnrollmentSubjectOrigin, PendingStatus, ResultStatus, Role, StudentCondition } from '@prisma/client';
+import { IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import { EducationModality, EnrollmentSubjectOrigin, GradingType, PendingStatus, ResultStatus, Role, StudentCondition } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common/security';
 import { automaticEnrollmentCloseDate } from '../common/school-calendar';
@@ -8,6 +8,38 @@ import { EnrollmentService } from '../enrollment/enrollment';
 import { deriveAcademicDecision } from '../enrollment/enrollment.rules';
 
 const SECTION_NAME = /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]+$/u;
+const ACADEMIC_NAME = /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9'(),.\-/ ]+$/u;
+
+const PLAN_CODE = /^\d{5}$/;
+
+class StudyPlanDto {
+  @IsEnum(EducationModality) modality!: EducationModality;
+  @IsString() @Matches(PLAN_CODE, { message: 'El código del plan debe contener exactamente 5 dígitos' }) code!: string;
+  @IsString() @MaxLength(160) optionName!: string;
+  @IsOptional() @IsString() @MaxLength(120) specialtyName?: string;
+  @IsBoolean() hasMention!: boolean;
+  @IsOptional() @IsString() @MaxLength(160) mentionName?: string;
+}
+
+class PlanActiveDto { @IsBoolean() active!: boolean; }
+
+class PlanSubjectDto {
+  @IsInt() @Min(1) @Max(6) gradeLevel!: number;
+  @IsString() @MaxLength(180) name!: string;
+  @IsOptional() @IsInt() @Min(1) @Max(60) weeklyHours?: number;
+  @IsOptional() @IsInt() @Min(1) @Max(3000) annualHours?: number;
+  @IsOptional() @IsString() @MaxLength(160) component?: string;
+  @IsOptional() @IsEnum(GradingType) gradingType?: GradingType;
+}
+
+class UpdatePlanSubjectDto {
+  @IsOptional() @IsString() @MaxLength(180) name?: string;
+  @IsOptional() @IsInt() @Min(1) @Max(60) weeklyHours?: number;
+  @IsOptional() @IsInt() @Min(1) @Max(3000) annualHours?: number;
+  @IsOptional() @IsString() @MaxLength(160) component?: string;
+  @IsOptional() @IsEnum(GradingType) gradingType?: GradingType;
+  @IsOptional() @IsBoolean() active?: boolean;
+}
 
 class SectionDto {
   @IsString() academicYearId!: string;
@@ -40,14 +72,14 @@ class MentionDto {
   @IsString() studyPlanId!: string;
 
   @IsString()
-  @Matches(SECTION_NAME, { message: 'El nombre de la mención solo puede contener letras' })
+  @Matches(ACADEMIC_NAME, { message: 'El nombre de la mención contiene caracteres no permitidos' })
   name!: string;
 }
 
 class UpdateMentionDto {
   @IsOptional()
   @IsString()
-  @Matches(SECTION_NAME, { message: 'El nombre de la mención solo puede contener letras' })
+  @Matches(ACADEMIC_NAME, { message: 'El nombre de la mención contiene caracteres no permitidos' })
   name?: string;
 
   @IsOptional()
@@ -89,14 +121,150 @@ export class AcademicService {
     });
   }
 
-  plans() {
+  plans(includeInactive = false) {
     return this.db.studyPlan.findMany({
-      where: { active: true },
+      where: includeInactive ? {} : { active: true },
       include: {
         subjects: { include: { subject: true }, orderBy: [{ gradeLevel: 'asc' }, { sortOrder: 'asc' }] },
-        mentions: { where: { active: true }, orderBy: { name: 'asc' } },
+        mentions: { where: includeInactive ? {} : { active: true }, orderBy: { name: 'asc' } },
+        _count: { select: { enrollments: true, sections: true } },
       },
-      orderBy: { code: 'asc' },
+      orderBy: [{ modality: 'asc' }, { code: 'asc' }],
+    });
+  }
+
+  private normalizeAcademicText(value?: string | null) {
+    return value?.trim() ? value.trim().replace(/\s+/g, ' ').toLocaleUpperCase('es-VE') : undefined;
+  }
+
+  private async planReadiness(planId: string) {
+    const plan = await this.db.studyPlan.findUniqueOrThrow({
+      where: { id: planId },
+      include: { subjects: { where: { active: true } }, mentions: { where: { active: true } } },
+    });
+    const missingGrades: number[] = [];
+    for (let grade = 1; grade <= plan.maxGrade; grade++) {
+      if (!plan.subjects.some((subject) => subject.gradeLevel === grade)) missingGrades.push(grade);
+    }
+    const missingMention = plan.hasMention && plan.mentions.length === 0;
+    return {
+      ready: missingGrades.length === 0 && !missingMention,
+      missingGrades,
+      missingMention,
+      plan,
+    };
+  }
+
+  async createStudyPlan(d: StudyPlanDto) {
+    const code = d.code.trim();
+    const duplicate = await this.db.studyPlan.findFirst({ where: { code } });
+    if (duplicate) throw new BadRequestException(`El código ${code} ya pertenece a un plan de estudio registrado`);
+    const optionName = this.normalizeAcademicText(d.optionName)!;
+    const specialtyName = this.normalizeAcademicText(d.specialtyName);
+    const mentionName = this.normalizeAcademicText(d.mentionName);
+    if (d.modality === EducationModality.MEDIA_TECNICA && !specialtyName) throw new BadRequestException('En Media Técnica debe indicar la especialidad');
+    if (d.hasMention && !mentionName) throw new BadRequestException('Indicó que el plan tiene mención; debe registrar el nombre de la mención');
+    if (!d.hasMention && mentionName) throw new BadRequestException('El plan fue marcado sin mención; elimine el nombre de la mención');
+    const maxGrade = d.modality === EducationModality.MEDIA_TECNICA ? 6 : 5;
+    const titleName = d.hasMention && mentionName ? `${optionName} · MENCIÓN ${mentionName}` : optionName;
+    return this.db.$transaction(async (tx) => {
+      const plan = await tx.studyPlan.create({
+        data: {
+          code,
+          name: optionName,
+          modality: d.modality,
+          specialtyName,
+          optionName,
+          hasMention: d.hasMention,
+          officialCatalog: false,
+          sourceReference: 'PLAN INCORPORADO MANUALMENTE POR LA INSTITUCIÓN',
+          curriculumVerified: false,
+          maxGrade,
+          titleName,
+          active: false,
+          effectiveFrom: new Date(),
+        },
+      });
+      if (d.hasMention && mentionName) await tx.mention.create({ data: { studyPlanId: plan.id, name: mentionName, active: true } });
+      return tx.studyPlan.findUnique({ where: { id: plan.id }, include: { mentions: true, subjects: { include: { subject: true } } } });
+    });
+  }
+
+  async setStudyPlanActive(id: string, active: boolean) {
+    const current = await this.db.studyPlan.findUniqueOrThrow({ where: { id } });
+    if (active) {
+      const readiness = await this.planReadiness(id);
+      if (!readiness.ready) {
+        const reasons = [
+          readiness.missingGrades.length ? `faltan materias en: ${readiness.missingGrades.map((g) => `${g}° AÑO`).join(', ')}` : null,
+          readiness.missingMention ? 'el plan requiere una mención activa' : null,
+        ].filter(Boolean).join(' · ');
+        throw new BadRequestException(`No puede activar el plan ${current.code}: ${reasons}`);
+      }
+    }
+    return this.db.studyPlan.update({ where: { id }, data: { active, curriculumVerified: active ? true : current.curriculumVerified } });
+  }
+
+  async planCurriculum(id: string) {
+    const plan = await this.db.studyPlan.findUniqueOrThrow({
+      where: { id },
+      include: {
+        subjects: { include: { subject: true }, orderBy: [{ gradeLevel: 'asc' }, { sortOrder: 'asc' }] },
+        mentions: { orderBy: { name: 'asc' } },
+        _count: { select: { enrollments: true, sections: true } },
+      },
+    });
+    const readiness = await this.planReadiness(id);
+    return { ...plan, readiness: { ready: readiness.ready, missingGrades: readiness.missingGrades, missingMention: readiness.missingMention } };
+  }
+
+  private async ensureCurriculumEditable(planId: string) {
+    const used = await this.db.enrollment.count({ where: { studyPlanId: planId } });
+    if (used > 0) throw new BadRequestException('La malla de este plan ya tiene estudiantes matriculados. Para preservar el histórico no puede modificarse directamente; debe crearse una nueva versión del plan.');
+  }
+
+  private slug(value: string) {
+    return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').toUpperCase().slice(0, 18) || 'MATERIA';
+  }
+
+  async addPlanSubject(planId: string, d: PlanSubjectDto) {
+    await this.ensureCurriculumEditable(planId);
+    const plan = await this.db.studyPlan.findUniqueOrThrow({ where: { id: planId } });
+    if (d.gradeLevel > plan.maxGrade) throw new BadRequestException(`El plan ${plan.code} solo contempla hasta ${plan.maxGrade}° AÑO`);
+    if (!d.weeklyHours && !d.annualHours) throw new BadRequestException('Indique carga horaria semanal o anual');
+    const name = this.normalizeAcademicText(d.name)!;
+    const duplicate = await this.db.studyPlanSubject.findFirst({
+      where: { studyPlanId: planId, gradeLevel: d.gradeLevel, subject: { name } },
+    });
+    if (duplicate) throw new BadRequestException('Esa materia ya está registrada en el año seleccionado');
+    const base = `${plan.code}-${d.gradeLevel}-${this.slug(name)}`.slice(0, 46);
+    let code = base;
+    let n = 1;
+    while (await this.db.subject.findUnique({ where: { code } })) code = `${base}-${++n}`.slice(0, 50);
+    const sort = await this.db.studyPlanSubject.aggregate({ where: { studyPlanId: planId, gradeLevel: d.gradeLevel }, _max: { sortOrder: true } });
+    return this.db.$transaction(async (tx) => {
+      const subject = await tx.subject.create({ data: { code, name, gradingType: d.gradingType || GradingType.NUMERIC } });
+      const row = await tx.studyPlanSubject.create({
+        data: { studyPlanId: planId, subjectId: subject.id, gradeLevel: d.gradeLevel, weeklyHours: d.weeklyHours, annualHours: d.annualHours, component: this.normalizeAcademicText(d.component), sortOrder: (sort._max.sortOrder ?? -1) + 1 },
+        include: { subject: true },
+      });
+      await tx.studyPlan.update({ where: { id: planId }, data: { curriculumVerified: false } });
+      return row;
+    });
+  }
+
+  async updatePlanSubject(id: string, d: UpdatePlanSubjectDto) {
+    const row = await this.db.studyPlanSubject.findUniqueOrThrow({ where: { id }, include: { subject: true } });
+    await this.ensureCurriculumEditable(row.studyPlanId);
+    return this.db.$transaction(async (tx) => {
+      if (d.name !== undefined || d.gradingType !== undefined) {
+        await tx.subject.update({ where: { id: row.subjectId }, data: { name: d.name !== undefined ? this.normalizeAcademicText(d.name) : undefined, gradingType: d.gradingType } });
+      }
+      return tx.studyPlanSubject.update({
+        where: { id },
+        data: { weeklyHours: d.weeklyHours, annualHours: d.annualHours, component: d.component !== undefined ? this.normalizeAcademicText(d.component) : undefined, active: d.active },
+        include: { subject: true },
+      });
     });
   }
 
@@ -139,7 +307,8 @@ export class AcademicService {
   }
 
   async createMention(d: MentionDto) {
-    await this.db.studyPlan.findUniqueOrThrow({ where: { id: d.studyPlanId } });
+    const plan = await this.db.studyPlan.findUniqueOrThrow({ where: { id: d.studyPlanId } });
+    if (!plan.hasMention) throw new BadRequestException('El plan seleccionado está configurado sin mención');
     const name = d.name.trim().replace(/\s+/g, ' ').toLocaleUpperCase('es-VE');
     const existing = await this.db.mention.findUnique({
       where: { studyPlanId_name: { studyPlanId: d.studyPlanId, name } },
@@ -349,9 +518,12 @@ export class AcademicService {
     ]);
     if (year.academicClosedAt) throw new BadRequestException('No puede crear secciones en un año escolar finalizado académicamente');
     if (d.gradeLevel > plan.maxGrade) throw new BadRequestException('El grado excede el máximo permitido por el plan de estudio');
+    if (!plan.active) throw new BadRequestException('El plan de estudio está inactivo para esta institución');
     if (!sectionName?.active) throw new BadRequestException('Seleccione un nombre de sección activo del catálogo administrativo');
-    if (!mention?.active || mention.studyPlanId !== plan.id) {
-      throw new BadRequestException('Seleccione una mención activa correspondiente al plan de estudio');
+    if (plan.hasMention) {
+      if (!mention?.active || mention.studyPlanId !== plan.id) throw new BadRequestException('Seleccione una mención activa correspondiente al plan de estudio');
+    } else if (mention) {
+      throw new BadRequestException('El plan seleccionado no utiliza mención');
     }
 
     const duplicate = await this.db.section.findFirst({
@@ -368,8 +540,8 @@ export class AcademicService {
       data: {
         academicYearId: d.academicYearId,
         studyPlanId: d.studyPlanId,
-        mentionId: mention.id,
-        mentionName: mention.name,
+        mentionId: plan.hasMention ? mention?.id : null,
+        mentionName: plan.hasMention ? mention?.name : null,
         gradeLevel: d.gradeLevel,
         name: sectionName.name,
         shift: d.shift.trim().toLocaleUpperCase('es-VE'),
@@ -416,7 +588,30 @@ export class AcademicController {
   constructor(private s: AcademicService) {}
 
   @Get('years') years() { return this.s.years(); }
-  @Get('plans') plans() { return this.s.plans(); }
+  @Get('plans') plans(@Query('all') all?: string) { return this.s.plans(all === 'true'); }
+
+  @Roles(Role.ADMIN)
+  @Post('plans')
+  createPlan(@Body() d: StudyPlanDto) { return this.s.createStudyPlan(d); }
+
+  @Roles(Role.ADMIN)
+  @Patch('plans/:id/active')
+  setPlanActive(@Param('id') id: string, @Body() d: PlanActiveDto) { return this.s.setStudyPlanActive(id, d.active); }
+
+  @Roles(Role.ADMIN)
+  @Post('plans/:id/assign')
+  assignPlan(@Param('id') id: string) { return this.s.setStudyPlanActive(id, true); }
+
+  @Get('plans/:id/curriculum')
+  curriculum(@Param('id') id: string) { return this.s.planCurriculum(id); }
+
+  @Roles(Role.ADMIN)
+  @Post('plans/:id/subjects')
+  addSubject(@Param('id') id: string, @Body() d: PlanSubjectDto) { return this.s.addPlanSubject(id, d); }
+
+  @Roles(Role.ADMIN)
+  @Patch('plan-subjects/:id')
+  updateSubject(@Param('id') id: string, @Body() d: UpdatePlanSubjectDto) { return this.s.updatePlanSubject(id, d); }
   @Get('sections') sections(@Query('academicYearId') year?: string, @Query('studyPlanId') plan?: string, @Query('gradeLevel') grade?: string, @Query('mentionId') mentionId?: string) {
     return this.s.sections(year, plan, grade ? Number(grade) : undefined, mentionId);
   }
