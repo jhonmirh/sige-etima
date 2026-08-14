@@ -1,4 +1,4 @@
-import { PrismaClient, Role, EducationModality, GradingType, Nationality } from '@prisma/client';
+import { PrismaClient, Role, EducationModality, GradingType, Nationality, StaffType } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { OFFICIAL_STUDY_PLAN_CATALOG, GENERAL_31059_CURRICULUM, GENERAL_31060_CURRICULUM, technicalCurriculum, CurriculumRow } from '../src/academic/official-plan-catalog';
 const db = new PrismaClient();
@@ -106,6 +106,24 @@ async function main(){
   const hash=await bcrypt.hash(adminPassword,12);
   await db.user.upsert({where:{email:adminEmail}, update:{active:true,role:Role.ADMIN}, create:{email:adminEmail,passwordHash:hash,role:Role.ADMIN}});
 
+  // V2.1.2 - Catálogo institucional de cargos por tipo de personal.
+  // Los códigos pueden ajustarse desde Administración; se preservan como punto de partida y se incorporan los códigos ya usados.
+  const basePositions=[
+    {staffType:StaffType.DOCENTE,code:'DOC',description:'DOCENTE'},
+    {staffType:StaffType.ADMINISTRATIVO,code:'ADM',description:'ADMINISTRATIVO'},
+    {staffType:StaffType.OBRERO,code:'OBR',description:'OBRERO'},
+  ];
+  for(const row of basePositions){
+    await db.staffPositionCatalog.upsert({where:{staffType_code:{staffType:row.staffType,code:row.code}},update:{},create:row});
+  }
+  const usedPositions=await db.staff.findMany({where:{cargoCode:{not:null}},select:{staffType:true,cargoCode:true,cargoDescription:true}});
+  for(const row of usedPositions){
+    const code=String(row.cargoCode||'').trim().toLocaleUpperCase('es-VE');
+    if(!code) continue;
+    const description=String(row.cargoDescription||code).trim().toLocaleUpperCase('es-VE');
+    await db.staffPositionCatalog.upsert({where:{staffType_code:{staffType:row.staffType,code}},update:{description},create:{staffType:row.staffType,code,description}});
+  }
+
   async function seedPlanCurriculum(plan:any, rows:CurriculumRow[]){
     for(let i=0;i<rows.length;i++){
       const row=rows[i];
@@ -180,6 +198,30 @@ async function main(){
     await db.auditLog.create({
       data:{action:activationNormalizationMarker,entity:'StudyPlan',metadata:{note:'Planes oficiales sin uso institucional establecidos como INACTIVOS. Los planes con secciones o matrículas se conservaron.'}},
     });
+  }
+
+  // V2.0.7.7 - Los códigos oficiales identifican una única opción/mención.
+  // Corrige datos que pudieron crearse manualmente en versiones anteriores.
+  // Caso concreto reportado: 41049 no admite una mención adicional ALGODÓN/ALGODON;
+  // su denominación canónica es CIENCIAS AGRÍCOLAS Y PECUARIAS.
+  const mentionNormalizationMarker='SEED_LOCK_OFFICIAL_PLAN_MENTIONS_V2077';
+  const mentionAlreadyNormalized=await db.auditLog.findFirst({where:{action:mentionNormalizationMarker,entity:'Mention'}});
+  if(!mentionAlreadyNormalized){
+    const plan41049=planByCode.get('41049');
+    if(plan41049){
+      const canonical='CIENCIAS AGRÍCOLAS Y PECUARIAS';
+      const canonicalRow=await db.mention.findUnique({where:{studyPlanId_name:{studyPlanId:plan41049.id,name:canonical}}});
+      if(canonicalRow && !canonicalRow.active) await db.mention.update({where:{id:canonicalRow.id},data:{active:true}});
+      const extras=await db.mention.findMany({where:{studyPlanId:plan41049.id,name:{not:canonical}},include:{_count:{select:{sections:true}}}});
+      for(const extra of extras){
+        if(extra._count.sections===0){
+          await db.mention.delete({where:{id:extra.id}});
+        }else if(extra.active){
+          await db.mention.update({where:{id:extra.id},data:{active:false}});
+        }
+      }
+    }
+    await db.auditLog.create({data:{action:mentionNormalizationMarker,entity:'Mention',metadata:{note:'Se bloquearon menciones manuales y se normalizó el plan 41049 a CIENCIAS AGRÍCOLAS Y PECUARIAS. Menciones extra sin secciones fueron eliminadas.'}}});
   }
 
   // Compatibilidad con datos creados antes de que BACHILLER se tratara como plan sin mención.

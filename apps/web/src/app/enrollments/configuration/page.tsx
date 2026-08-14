@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, CalendarPlus, CheckCircle2, Copy, Plus, Power, School, TriangleAlert } from 'lucide-react';
+import { ArrowLeft, CalendarPlus, CheckCircle2, Plus, Power, School, TriangleAlert } from 'lucide-react';
 import Shell from '@/components/Shell';
 import { api } from '@/lib/api';
 import { nameOnlyInput, toUpperInput } from '@/lib/formRules';
@@ -20,7 +20,6 @@ export default function EnrollmentConfiguration() {
   const [catalogModality, setCatalogModality] = useState('MEDIA_GENERAL');
   const [catalogPlanId, setCatalogPlanId] = useState('');
   const [manualPlanModality, setManualPlanModality] = useState('MEDIA_GENERAL');
-  const [manualPlanHasMention, setManualPlanHasMention] = useState(false);
   const [curriculum, setCurriculum] = useState<any>(null);
   const [curriculumGrade, setCurriculumGrade] = useState(1);
   const [sections, setSections] = useState<any[]>([]);
@@ -30,7 +29,6 @@ export default function EnrollmentConfiguration() {
   const [yearId, setYearId] = useState('');
   const [sectionPlanId, setSectionPlanId] = useState('');
   const [sectionMentionId, setSectionMentionId] = useState('');
-  const [cloneSourceId, setCloneSourceId] = useState('');
   const [newYearStartDate, setNewYearStartDate] = useState('');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -67,8 +65,6 @@ export default function EnrollmentConfiguration() {
       setSectionPlanId(prev => prev || p[0]?.id || '');
       const selected = preferred || yearId || y.find((x: any) => x.active)?.id || y[0]?.id || '';
       setYearId(selected);
-      const cloneCandidate = y.find((x: any) => x.id !== selected)?.id || '';
-      setCloneSourceId(prev => prev && prev !== selected ? prev : cloneCandidate);
       setSections(selected ? await api(`/academic/sections?academicYearId=${selected}`) : []);
       setErr('');
     } catch (e: any) {
@@ -182,7 +178,6 @@ export default function EnrollmentConfiguration() {
     e.preventDefault();
     const form = e.currentTarget;
     const f = new FormData(form);
-    const hasMention = f.get('hasMention') === 'on';
     try {
       const created = await api('/academic/plans', {
         method: 'POST',
@@ -191,15 +186,13 @@ export default function EnrollmentConfiguration() {
           code: String(f.get('code') || ''),
           specialtyName: String(f.get('specialtyName') || '') || undefined,
           optionName: String(f.get('optionName') || '').toLocaleUpperCase('es-VE'),
-          hasMention,
-          mentionName: hasMention ? String(f.get('mentionName') || '').toLocaleUpperCase('es-VE') : undefined,
+          hasMention: false,
         }),
       });
       setMsg(`Plan ${created.code} creado. Cargue las materias de cada año antes de activarlo.`);
       setErr('');
       form.reset();
       setManualPlanModality('MEDIA_GENERAL');
-      setManualPlanHasMention(false);
       setCatalogModality(created.modality);
       setCatalogPlanId(created.id);
       setCurriculumGrade(1);
@@ -257,50 +250,6 @@ export default function EnrollmentConfiguration() {
     } catch (e:any) { setErr(e.message); }
   }
 
-  async function createMention(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const form = e.currentTarget;
-    const f = new FormData(form);
-    try {
-      await api('/academic/mentions', {
-        method: 'POST',
-        body: JSON.stringify({
-          studyPlanId: String(f.get('studyPlanId') || ''),
-          name: String(f.get('name') || '').toLocaleUpperCase('es-VE'),
-        }),
-      });
-      setMsg('Mención agregada al catálogo académico');
-      setErr('');
-      form.reset();
-      setMentions(await api('/academic/mentions'));
-      setCatalogPlans(await api('/academic/plans?all=true'));
-    } catch (e: any) { setErr(e.message); }
-  }
-
-  async function toggleMention(id: string, active: boolean) {
-    try {
-      await api(`/academic/mentions/${id}`, { method: 'PATCH', body: JSON.stringify({ active }) });
-      setMsg(active ? 'Mención activada' : 'Mención inactivada');
-      setErr('');
-      setMentions(await api('/academic/mentions'));
-      setCatalogPlans(await api('/academic/plans?all=true'));
-    } catch (e: any) { setErr(e.message); }
-  }
-
-  async function renameMention(item: any) {
-    const value = window.prompt('Nuevo nombre de la mención', item.name);
-    if (value === null) return;
-    const name = value.trim().toLocaleUpperCase('es-VE');
-    if (!name || name === item.name) return;
-    try {
-      await api(`/academic/mentions/${item.id}`, { method: 'PATCH', body: JSON.stringify({ name }) });
-      setMsg('Nombre de la mención actualizado. Las secciones históricas conservan el nombre con el que fueron creadas.');
-      setErr('');
-      setMentions(await api('/academic/mentions'));
-      setCatalogPlans(await api('/academic/plans?all=true'));
-    } catch (e: any) { setErr(e.message); }
-  }
-
   async function createSection(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = e.currentTarget;
@@ -334,18 +283,6 @@ export default function EnrollmentConfiguration() {
       await load(id);
     } catch (e: any) { setErr(e.message); }
   }
-
-  async function clone() {
-    const source = years.find(x => x.id === cloneSourceId);
-    if (!source) return;
-    try {
-      await api(`/academic/years/${yearId}/clone-sections`, { method: 'POST', body: JSON.stringify({ sourceAcademicYearId: source.id }) });
-      setMsg(`Secciones clonadas desde ${source.name}`);
-      setErr('');
-      setSections(await api(`/academic/sections?academicYearId=${yearId}`));
-    } catch (e: any) { setErr(e.message); }
-  }
-
 
   async function inactivateYear(id: string, name: string) {
     if (!confirm(`¿Pasar las matrículas activas de ${name} a condición INACTIVO? La definitiva académica se conservará separadamente.`)) return;
@@ -454,10 +391,8 @@ export default function EnrollmentConfiguration() {
       <form onSubmit={createStudyPlan} className="form-grid cols-3" style={{alignItems:'end'}}>
         <div><label>Modalidad *</label><select className="input" name="modality" value={manualPlanModality} onChange={e=>setManualPlanModality(e.target.value)} required><option value="MEDIA_GENERAL">MEDIA GENERAL</option><option value="MEDIA_TECNICA">MEDIA TÉCNICA</option></select></div>
         <div><label>Código del plan *</label><input className="input" name="code" inputMode="numeric" maxLength={5} pattern="[0-9]{5}" placeholder="00000" required/></div>
-        <div><label>Nombre de la opción / plan *</label><input className="input uppercase" name="optionName" onInput={toUpperInput} placeholder={manualPlanModality==='MEDIA_TECNICA'?'ELECTRICIDAD':'BACHILLER'} required/></div>
+        <div className="span-2"><label>Nombre completo oficial del plan / opción *</label><input className="input uppercase" name="optionName" onInput={toUpperInput} placeholder="DENOMINACIÓN OFICIAL COMPLETA" required/><small className="muted">Cada código corresponde a un único plan/opción. No se crean menciones adicionales dentro de un código existente.</small></div>
         <div><label>Especialidad {manualPlanModality==='MEDIA_TECNICA'?'*':''}</label><input className="input uppercase" name="specialtyName" onInput={toUpperInput} placeholder="INDUSTRIAL" required={manualPlanModality==='MEDIA_TECNICA'} disabled={manualPlanModality!=='MEDIA_TECNICA'}/></div>
-        <div className="check-card"><input id="manualHasMention" type="checkbox" name="hasMention" checked={manualPlanHasMention} onChange={e=>setManualPlanHasMention(e.target.checked)}/><label htmlFor="manualHasMention"><strong>¿Tiene mención?</strong><span>Actívelo cuando el plan requiere una mención u opción académica asociada.</span></label></div>
-        <div><label>Nombre de la mención {manualPlanHasMention?'*':''}</label><input className="input uppercase" name="mentionName" onInput={toUpperInput} disabled={!manualPlanHasMention} required={manualPlanHasMention} placeholder="NOMBRE DE LA MENCIÓN"/></div>
         <button className="btn" type="submit"><Plus size={16}/> Crear plan inactivo</button>
       </form>
     </section>}
@@ -477,26 +412,18 @@ export default function EnrollmentConfiguration() {
       </form> : <div className="warning-banner" style={{marginTop:14}}><div><strong>MALLA PROTEGIDA</strong><span>Este plan ya tiene estudiantes matriculados. Para no alterar calificaciones ni históricos, sus materias no se modifican directamente; una modificación curricular debe manejarse como una nueva versión autorizada.</span></div></div>}
     </section>}
 
-    {me?.role === 'ADMIN' && <section className="card form-section" style={{marginTop:16}}>
-      <div className="section-head"><div><span className="eyebrow">Solo cuando el plan lo requiera</span><h2>Catálogo de menciones</h2><p>Las menciones se administran únicamente para planes ACTIVOS de la institución configurados con “Tiene mención”. Los planes precargados permanecen INACTIVOS hasta que Administración decida activarlos.</p></div><School size={22}/></div>
-      <form onSubmit={createMention} className="form-grid cols-3" style={{alignItems:'end',marginBottom:16}}>
-        <div><label>Plan de estudio *</label><select className="input" name="studyPlanId" required><option value="">Seleccione</option>{catalogPlans.filter((p:any)=>p.active && p.hasMention).map((p:any)=><option key={p.id} value={p.id}>{p.code} · {p.modality==='MEDIA_TECNICA'?'MEDIA TÉCNICA':'MEDIA GENERAL'} · {p.optionName || p.name}</option>)}</select></div>
-        <div><label>Nombre de la mención *</label><input className="input uppercase" name="name" placeholder="CIENCIA Y TECNOLOGÍA" onInput={toUpperInput} required/></div>
-        <button className="btn" type="submit" disabled={catalogPlans.filter((p:any)=>p.active && p.hasMention).length===0}><Plus size={16}/> Agregar mención</button>
-      </form>
-      <div className="table-wrap"><table><thead><tr><th>Modalidad</th><th>Plan</th><th>Mención</th><th>Estado</th><th>Secciones</th><th>Acciones</th></tr></thead><tbody>{mentions.filter((m:any)=>m.studyPlan?.active && m.studyPlan?.hasMention).length===0?<tr><td colSpan={6}>Todavía no hay menciones registradas para planes que las requieran.</td></tr>:mentions.filter((m:any)=>m.studyPlan?.active && m.studyPlan?.hasMention).map((m:any)=><tr key={m.id}><td><strong>{m.studyPlan?.modality==='MEDIA_TECNICA'?'MEDIA TÉCNICA':'MEDIA GENERAL'}</strong></td><td>{m.studyPlan?.code}</td><td><strong>{m.name}</strong></td><td><span className={`status ${m.active?'ok':'neutral'}`}>{m.active?'ACTIVA':'INACTIVA'}</span></td><td>{m._count?.sections||0}</td><td><div className="row-actions"><button className="btn secondary mini-btn" type="button" onClick={()=>renameMention(m)}>Renombrar</button><button className="btn secondary mini-btn" type="button" onClick={()=>toggleMention(m.id,!m.active)}>{m.active?'Inactivar':'Activar'}</button></div></td></tr>)}</tbody></table></div>
-      <p className="muted" style={{marginTop:10}}>Las secciones históricas conservan la mención con la que fueron creadas. Un plan configurado sin mención no exige este dato al crear secciones ni matrículas.</p>
-    </section>}
+
+    {me?.role === 'ADMIN' && <div className="info-banner" style={{marginTop:16}}><div><strong>MENCIONES / OPCIONES BLOQUEADAS POR CÓDIGO</strong><span>La denominación académica viene definida por el plan de estudio. No se permite agregar, renombrar o inactivar menciones manualmente. Para una opción nueva debe registrarse un código de plan distinto que no exista en el catálogo vigente.</span></div></div>}
 
     {me && me.role !== 'ADMIN' && <div className="warning-banner" style={{marginTop:16}}><div><strong>CATÁLOGO DE SECCIONES ADMINISTRADO CENTRALMENTE</strong><span>Los nombres nuevos deben ser incorporados por un usuario con rol ADMINISTRADOR. Los nombres activos quedan disponibles para Dirección al crear secciones.</span></div></div>}
 
-    <div className="section-title">
-      <div><h2>Secciones del período</h2><p className="muted">La reinscripción sugiere el mismo nombre de sección cuando existe en el nuevo grado.</p></div>
-      <div className="row-actions"><select className="input" value={yearId} onChange={e => {setYearId(e.target.value); if (cloneSourceId === e.target.value) setCloneSourceId(years.find((x:any) => x.id !== e.target.value)?.id || '');}}>{years.map(y => <option key={y.id} value={y.id}>{y.name}</option>)}</select>{years.length > 1 && <select className="input" value={cloneSourceId} onChange={e => setCloneSourceId(e.target.value)}><option value="">Año origen</option>{years.filter((y:any) => y.id !== yearId).map((y:any) => <option key={y.id} value={y.id}>Copiar desde {y.name}</option>)}</select>}<button className="btn secondary" onClick={clone} disabled={!cloneSourceId}><Copy size={16}/> Clonar secciones</button></div>
+    <div className="section-title sections-period-heading">
+      <div><h2>Secciones del período</h2><p className="muted">Configure manualmente las secciones de cada período. La reinscripción sugiere el mismo nombre cuando existe en el nuevo grado.</p></div>
+      <div className="period-selector"><label>Año escolar</label><select className="input" value={yearId} onChange={e => setYearId(e.target.value)}>{years.map(y => <option key={y.id} value={y.id}>{y.name}</option>)}</select></div>
     </div>
 
-    <div className="details-grid">
-      <form className="card form-section" onSubmit={createSection}>
+    <div className="sections-stack">
+      <form className="card form-section section-create-card" onSubmit={createSection}>
         <div className="section-head"><div><h3>Crear sección</h3><p>Seleccione un nombre previamente autorizado en el catálogo administrativo.</p></div><School size={22}/></div>
         {activeSectionNames.length === 0 && <div className="alert">No hay nombres activos en el catálogo de secciones. Un Administrador debe registrar al menos uno antes de crear nuevas secciones.</div>}
         {selectedSectionPlan?.hasMention && activeMentionsForPlan.length===0 && <div className="alert">El plan seleccionado requiere mención y no tiene una activa. Un Administrador debe registrar o activar la mención correspondiente antes de crear la sección.</div>}
@@ -512,7 +439,7 @@ export default function EnrollmentConfiguration() {
         <button className="btn" disabled={activeSectionNames.length===0 || !!(selectedSectionPlan?.hasMention && !sectionMentionId)}>Crear sección</button>
       </form>
 
-      <section className="card"><h3>Secciones configuradas</h3><p className="muted">Hasta el 31 de octubre inclusive, la numeración es provisional y se determina por cédula. Desde el 1 de noviembre queda fija automáticamente; los retiros posteriores conservan su posición y toda matrícula posterior recibe el siguiente número al final por fecha de registro.</p><div className="table-wrap"><table><thead><tr><th>Modalidad</th><th>Plan</th><th>Grado</th><th>Mención</th><th>Sección</th><th>Turno</th><th>Matrículas</th><th>Nómina</th></tr></thead><tbody>{sections.length === 0 ? <tr><td colSpan={8}>No hay secciones configuradas.</td></tr> : sections.map(s => <tr key={s.id}><td>{s.studyPlan.modality==='MEDIA_TECNICA'?'MEDIA TÉCNICA':'MEDIA GENERAL'}</td><td>{s.studyPlan.code}</td><td>{s.gradeLevel}°</td><td>{s.studyPlan?.hasMention ? (s.mentionName || 'SIN DEFINIR') : 'NO APLICA'}</td><td>{s.name}</td><td>{s.shift || '—'}</td><td>{s._count?.enrollments || 0}</td><td>{s.rosterLockedAt ? <span className="status ok">FIJA</span> : closeReached(s) ? <span className="status ok">FIJA AUTOMÁTICA DESDE {rosterLockLabelFromClose(s.academicYear.enrollmentCloseDate)}</span> : <span className="status warn">PROVISIONAL HASTA {dateLabel(s.academicYear.enrollmentCloseDate)} INCLUSIVE</span>}</td></tr>)}</tbody></table></div></section>
+      <section className="card section-configured-card"><div className="section-head"><div><h3>Secciones configuradas</h3><p className="muted">Hasta el 31 de octubre inclusive, la numeración es provisional y se determina por cédula. Desde el 1 de noviembre queda fija automáticamente; los retiros posteriores conservan su posición y toda matrícula posterior recibe el siguiente número al final por fecha de registro.</p></div><School size={22}/></div><div className="table-wrap"><table><thead><tr><th>Modalidad</th><th>Plan</th><th>Grado</th><th>Mención</th><th>Sección</th><th>Turno</th><th>Matrículas</th><th>Nómina</th></tr></thead><tbody>{sections.length === 0 ? <tr><td colSpan={8}>No hay secciones configuradas.</td></tr> : sections.map(s => <tr key={s.id}><td>{s.studyPlan.modality==='MEDIA_TECNICA'?'MEDIA TÉCNICA':'MEDIA GENERAL'}</td><td>{s.studyPlan.code}</td><td>{s.gradeLevel}°</td><td>{s.studyPlan?.hasMention ? (s.mentionName || 'SIN DEFINIR') : 'NO APLICA'}</td><td>{s.name}</td><td>{s.shift || '—'}</td><td>{s._count?.enrollments || 0}</td><td>{s.rosterLockedAt ? <span className="status ok">FIJA</span> : closeReached(s) ? <span className="status ok">FIJA AUTOMÁTICA DESDE {rosterLockLabelFromClose(s.academicYear.enrollmentCloseDate)}</span> : <span className="status warn">PROVISIONAL HASTA {dateLabel(s.academicYear.enrollmentCloseDate)} INCLUSIVE</span>}</td></tr>)}</tbody></table></div></section>
     </div>
   </Shell>;
 }

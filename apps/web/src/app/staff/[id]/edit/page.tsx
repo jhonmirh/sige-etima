@@ -1,0 +1,3 @@
+'use client';
+import {useEffect,useState} from 'react';import {useParams} from 'next/navigation';import Shell from '@/components/Shell';import StaffForm from '@/components/StaffForm';import {api} from '@/lib/api';
+export default function EditStaff(){const {id}=useParams<{id:string}>();const [row,setRow]=useState<any>(),[error,setError]=useState('');useEffect(()=>{api(`/staff/${id}`).then(setRow).catch(e=>setError(e.message))},[id]);return <Shell title="Editar personal">{error&&<div className="alert">{error}</div>}{row?<StaffForm mode="edit" staff={row}/>:<div className="card">Cargando…</div>}</Shell>}

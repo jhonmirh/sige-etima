@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { BookOpenCheck, CheckCircle2, ChevronRight, CirclePlus, Pencil, Power, School, ShieldCheck, TriangleAlert } from 'lucide-react';
+import { BookOpenCheck, CheckCircle2, ChevronRight, CirclePlus, Pencil, Power, School, ShieldCheck, Trash2, TriangleAlert } from 'lucide-react';
 import Shell from '@/components/Shell';
 import { api } from '@/lib/api';
 import { toUpperInput } from '@/lib/formRules';
@@ -24,12 +24,12 @@ export default function Plans() {
   const [curriculum, setCurriculum] = useState<any>(null);
   const [grade, setGrade] = useState(1);
   const [manualModality, setManualModality] = useState('MEDIA_GENERAL');
-  const [manualHasMention, setManualHasMention] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   const curriculumRef = useRef<HTMLElement | null>(null);
 
   const filtered = useMemo(() => rows.filter((p: any) => p.modality === modality), [rows, modality]);
+  const manualPlans = useMemo(() => rows.filter((p: any) => !p.officialCatalog), [rows]);
   const selected = useMemo(() => rows.find((p: any) => p.id === selectedId), [rows, selectedId]);
   const gradeSubjects = useMemo(
     () => (curriculum?.subjects || []).filter((r: any) => Number(r.gradeLevel) === grade),
@@ -110,6 +110,38 @@ export default function Plans() {
     } catch (e: any) { setErr(String(e?.message || e)); }
   }
 
+  async function deletePlan(plan: any) {
+    if (plan?.officialCatalog) {
+      setErr('Los planes del catálogo nacional no pueden eliminarse; solo pueden inactivarse.');
+      return;
+    }
+    const enrollments = Number(plan?._count?.enrollments || 0);
+    const sections = Number(plan?._count?.sections || 0);
+    if (enrollments > 0 || sections > 0) {
+      setErr(`El plan ${plan.code} ya tiene uso académico y no puede borrarse. Debe conservarse para el histórico e inactivarse.`);
+      return;
+    }
+    const ok = confirm(
+      `¿ELIMINAR DEFINITIVAMENTE el plan manual ${plan.code} · ${plan.optionName || plan.name}?\n\n` +
+      'Se borrarán también su malla y sus menciones no utilizadas. Esta acción no se puede deshacer.\n\n' +
+      'Los planes oficiales del catálogo nacional nunca se eliminan.'
+    );
+    if (!ok) return;
+    try {
+      await api(`/academic/plans/${plan.id}`, { method: 'DELETE' });
+      setMsg(`Plan manual ${plan.code} eliminado correctamente.`);
+      setErr('');
+      if (curriculum?.id === plan.id) {
+        setCurriculum(null);
+        setGrade(1);
+      }
+      setSelectedId('');
+      await load();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    }
+  }
+
   async function createPlan(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = e.currentTarget;
@@ -122,36 +154,16 @@ export default function Plans() {
           code: String(f.get('code') || ''),
           specialtyName: manualModality === 'MEDIA_TECNICA' ? String(f.get('specialtyName') || '').toLocaleUpperCase('es-VE') : undefined,
           optionName: String(f.get('optionName') || '').toLocaleUpperCase('es-VE'),
-          hasMention: manualHasMention,
-          mentionName: manualHasMention ? String(f.get('mentionName') || '').toLocaleUpperCase('es-VE') : undefined,
+          hasMention: false,
         }),
       });
       setMsg(`Plan ${created.code} incorporado como INACTIVO. Ahora cargue las materias de sus ${created.maxGrade} años y luego asígnelo a la institución.`);
       setErr('');
       form.reset();
       setManualModality('MEDIA_GENERAL');
-      setManualHasMention(false);
       setModality(created.modality);
       await load(created.id);
       await openCurriculum(created.id);
-    } catch (e: any) { setErr(String(e?.message || e)); }
-  }
-
-  async function addMention(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (!curriculum?.id) return;
-    const form = e.currentTarget;
-    const f = new FormData(form);
-    try {
-      await api('/academic/mentions', {
-        method: 'POST',
-        body: JSON.stringify({ studyPlanId: curriculum.id, name: String(f.get('name') || '').toLocaleUpperCase('es-VE') }),
-      });
-      setMsg('Mención agregada correctamente.');
-      setErr('');
-      form.reset();
-      await load(curriculum.id);
-      await openCurriculum(curriculum.id, false);
     } catch (e: any) { setErr(String(e?.message || e)); }
   }
 
@@ -268,11 +280,15 @@ export default function Plans() {
             </div>
             <span className={`status ${selected.active ? 'ok' : 'neutral'}`}>{selected.active ? 'ASIGNADO / ACTIVO' : 'DISPONIBLE / INACTIVO'}</span>
           </div>
-          <div className="row-actions" style={{ marginTop: 10 }}>
+          <div className="row-actions" style={{ marginTop: 10, flexWrap: 'wrap' }}>
             {!selected.active && <button type="button" className="btn" onClick={() => assign(selected)}><CheckCircle2 size={16}/> Asignar a ETIMA</button>}
             {selected.active && <button type="button" className="btn secondary" onClick={() => setActive(selected, false)}><Power size={16}/> Inactivar para nuevas matrículas</button>}
             <button type="button" className="btn secondary" onClick={() => openCurriculum(selected.id)}><ChevronRight size={16}/> Ver materias por año</button>
+            {!selected.officialCatalog && Number(selected?._count?.enrollments || 0) === 0 && Number(selected?._count?.sections || 0) === 0 &&
+              <button type="button" className="btn secondary" style={{ borderColor: '#b42318', color: '#b42318' }} onClick={() => deletePlan(selected)}><Trash2 size={16}/> Eliminar plan creado</button>}
           </div>
+          {!selected.officialCatalog && (Number(selected?._count?.enrollments || 0) > 0 || Number(selected?._count?.sections || 0) > 0) &&
+            <p className="muted" style={{ marginTop: 8 }}>Este plan fue incorporado manualmente, pero ya tiene uso académico. Por seguridad histórica no puede borrarse; solo puede inactivarse.</p>}
         </div>}
       </section>
 
@@ -281,17 +297,45 @@ export default function Plans() {
           <span className="eyebrow">Paso alternativo · Código no catalogado</span>
           <h2>Incorporar un plan nuevo autorizado</h2>
           <p>Use este formulario únicamente si el Ministerio autoriza un código que todavía no esté en el catálogo. El código es único. El plan se crea INACTIVO y deberá completar su malla antes de asignarlo.</p>
+          <p className="muted">Si comete un error, un plan creado manualmente puede eliminarse mientras no tenga secciones ni matrículas. Los planes del catálogo nacional nunca se borran: solo se activan o inactivan.</p>
         </div><CirclePlus size={24}/></div>
         <form className="form-grid cols-3" onSubmit={createPlan} style={{ alignItems: 'end' }}>
-          <div><label>Modalidad *</label><select className="input" name="modality" value={manualModality} onChange={e => { setManualModality(e.target.value); setManualHasMention(false); }} required><option value="MEDIA_GENERAL">MEDIA GENERAL</option><option value="MEDIA_TECNICA">MEDIA TÉCNICA</option></select></div>
+          <div><label>Modalidad *</label><select className="input" name="modality" value={manualModality} onChange={e => setManualModality(e.target.value)} required><option value="MEDIA_GENERAL">MEDIA GENERAL</option><option value="MEDIA_TECNICA">MEDIA TÉCNICA</option></select></div>
           <div><label>Código del plan *</label><input className="input" name="code" inputMode="numeric" pattern="[0-9]{5}" maxLength={5} placeholder="00000" required/></div>
           <div><label>Duración</label><div className="input read-only">{manualModality === 'MEDIA_TECNICA' ? '6 AÑOS' : '5 AÑOS'}</div></div>
           {manualModality === 'MEDIA_TECNICA' && <div><label>Especialidad *</label><input className="input uppercase" name="specialtyName" onInput={toUpperInput} placeholder="INDUSTRIAL" required/></div>}
-          <div><label>Nombre de la opción / plan *</label><input className="input uppercase" name="optionName" onInput={toUpperInput} placeholder="NOMBRE OFICIAL" required/></div>
-          <div><label>¿Tiene mención? *</label><select className="input" value={manualHasMention ? 'SI' : 'NO'} onChange={e => setManualHasMention(e.target.value === 'SI')}><option value="NO">NO</option><option value="SI">SÍ</option></select></div>
-          {manualHasMention && <div><label>Nombre de la mención *</label><input className="input uppercase" name="mentionName" onInput={toUpperInput} placeholder="MENCIÓN AUTORIZADA" required/></div>}
+          <div className="span-2"><label>Nombre completo oficial del plan / opción *</label><input className="input uppercase" name="optionName" onInput={toUpperInput} placeholder="DENOMINACIÓN OFICIAL COMPLETA" required/><small className="muted">El código identifica una sola opción académica. No se crean menciones adicionales dentro de un código existente.</small></div>
           <button className="btn" type="submit"><CirclePlus size={16}/> Crear plan y cargar malla</button>
         </form>
+      </section>
+
+      <section className="card form-section" style={{ marginBottom: 16 }}>
+        <div className="section-head"><div>
+          <span className="eyebrow">Planes creados por la institución</span>
+          <h2>Administrar planes manuales</h2>
+          <p>Los planes que no pertenecen al catálogo nacional aparecen aquí aunque estén inactivos. Puede corregir un error eliminándolos mientras todavía no tengan secciones ni matrículas.</p>
+        </div><Trash2 size={24}/></div>
+
+        {manualPlans.length === 0 ? <div className="info-banner"><div><strong>NO HAY PLANES MANUALES</strong><span>Todos los planes registrados actualmente pertenecen al catálogo nacional.</span></div></div> :
+        <div className="table-wrap"><table><thead><tr><th>Código</th><th>Modalidad</th><th>Plan / opción</th><th>Estado</th><th>Uso académico</th><th>Acciones</th></tr></thead><tbody>
+          {manualPlans.map((p:any) => {
+            const enrollments = Number(p?._count?.enrollments || 0);
+            const sections = Number(p?._count?.sections || 0);
+            const canDelete = enrollments === 0 && sections === 0;
+            return <tr key={p.id}>
+              <td><strong>{p.code}</strong></td>
+              <td>{modalityLabel(p.modality)}</td>
+              <td><strong>{p.optionName || p.name}</strong>{p.specialtyName ? <div className="muted">{p.specialtyName}</div> : null}</td>
+              <td><span className={`status ${p.active ? 'ok' : 'neutral'}`}>{p.active ? 'ACTIVO' : 'INACTIVO'}</span></td>
+              <td>{sections} sección(es) · {enrollments} matrícula(s)</td>
+              <td><div className="row-actions" style={{flexWrap:'wrap'}}>
+                <button type="button" className="btn secondary mini-btn" onClick={() => openCurriculum(p.id)}>Malla</button>
+                {p.active ? <button type="button" className="btn secondary mini-btn" onClick={() => setActive(p,false)}>Inactivar</button> : <button type="button" className="btn secondary mini-btn" onClick={() => assign(p)}>Activar</button>}
+                {canDelete ? <button type="button" className="btn secondary mini-btn" style={{borderColor:'#b42318',color:'#b42318'}} onClick={() => deletePlan(p)}><Trash2 size={13}/> Eliminar</button> : <span className="muted">No se puede borrar: tiene histórico</span>}
+              </div></td>
+            </tr>
+          })}
+        </tbody></table></div>}
       </section>
     </> : <div className="warning-banner" style={{ marginBottom: 16 }}><div><strong>GESTIÓN RESTRINGIDA</strong><span>Solo un Administrador puede asignar, crear o modificar planes de estudio. Dirección y otros perfiles pueden consultar la oferta activa.</span></div></div>}
 
@@ -346,10 +390,7 @@ export default function Plans() {
           <button className="btn" type="submit"><CirclePlus size={16}/> Agregar materia</button>
         </form>
 
-        {curriculum.hasMention && <form onSubmit={addMention} className="form-grid cols-3" style={{ alignItems: 'end', marginTop: 16 }}>
-          <div className="span-2"><label>Agregar otra mención al plan</label><input className="input uppercase" name="name" onInput={toUpperInput} placeholder="NOMBRE DE LA MENCIÓN" required/></div>
-          <button className="btn secondary" type="submit"><CirclePlus size={16}/> Agregar mención</button>
-        </form>}
+        {curriculum.hasMention && <div className="info-banner" style={{marginTop:16}}><div><strong>DENOMINACIÓN FIJA DEL PLAN</strong><span>La mención/opción está definida por el código del plan y no puede agregarse, renombrarse ni sustituirse manualmente.</span></div></div>}
 
         {!curriculum.active && <div className="row-actions" style={{ marginTop: 16 }}><button type="button" className="btn" disabled={!curriculum.readiness?.ready} onClick={()=>assign(curriculum)}><CheckCircle2 size={16}/> {curriculum.readiness?.ready ? 'Asignar plan a la institución' : 'Complete la malla antes de asignar'}</button></div>}
       </> : (curriculum._count?.enrollments || 0) > 0 && <div className="warning-banner" style={{ marginTop: 14 }}><div><strong>MALLA PROTEGIDA</strong><span>Este plan ya tiene estudiantes matriculados. Para preservar notas, definitivas y certificados, la malla no se modifica directamente. Una reforma curricular debe registrarse como una nueva versión autorizada.</span></div></div>}

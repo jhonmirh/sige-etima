@@ -71,6 +71,29 @@ enum DocumentType {
   AUTORIZACION_REPRESENTANTE
   OTRO
 }
+enum StaffType {
+  DOCENTE
+  ADMINISTRATIVO
+  OBRERO
+  COCINERO
+}
+enum EmploymentCondition {
+  ACTIVO
+  REPOSO_CONTINUO
+  INCAPACITADO
+  JUBILADO
+  EN_PROCESO_JUBILACION
+  PROCESO_ADMINISTRATIVO
+}
+enum IncapacityExecutor {
+  IPASME
+  IVSS
+}
+enum HousingTenure {
+  PROPIA
+  ALQUILADA
+  PRESTADA
+}
 enum QualificationType {
   PREGRADO
   ESPECIALIZACION
@@ -574,8 +597,22 @@ model Contribution {
   @@unique([representativeId, academicYearId])
 }
 
+
+model StaffPositionCatalog {
+  id String @id @default(uuid())
+  staffType StaffType
+  code String
+  description String
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([staffType, code])
+  @@index([staffType, active])
+}
+
 model Staff {
   id String @id @default(uuid())
+  staffType StaffType @default(DOCENTE)
   nationality Nationality @default(VENEZOLANO)
   identityNumber String @unique
   maritalStatus String?
@@ -589,6 +626,16 @@ model Staff {
   sex Sex?
   birthPlace String?
   birthDate DateTime?
+  bloodType String?
+  housingTenure HousingTenure?
+  housingRepairNeeded Boolean @default(false)
+  housingRepairDescription String?
+  hasDisease Boolean @default(false)
+  diseaseDescription String?
+  needsSurgery Boolean @default(false)
+  surgeryDescription String?
+  wearsGlasses Boolean @default(false)
+  eyeConditionDescription String?
   disability Boolean @default(false)
   medicalReport Boolean @default(false)
   childrenCount Int @default(0)
@@ -602,12 +649,44 @@ model Staff {
   accountType AccountType?
   accountNumber String?
   ministryEntryDate DateTime?
+  employmentCondition EmploymentCondition @default(ACTIVO)
+  continuousLeaveDisease String?
+  continuousLeaveCount Int?
+  incapacityExecutor IncapacityExecutor?
+  incapacityDate DateTime?
+  retirementDate DateTime?
+  retirementProcessDate DateTime?
+  retirementProcessObservation String?
+  administrativeProcessDate DateTime?
+  administrativeProcessObservation String?
   active Boolean @default(true)
   qualifications StaffQualification[]
+  children StaffChild[]
   assignments TeacherAssignment[]
   user User?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model StaffChild {
+  id String @id @default(uuid())
+  staffId String
+  staff Staff @relation(fields:[staffId], references:[id], onDelete:Cascade)
+  firstName String
+  middleName String?
+  lastName String
+  secondLastName String?
+  identityNumber String?
+  birthDate DateTime
+  studying Boolean @default(false)
+  educationLevel String?
+  institutionName String?
+  hasDisease Boolean @default(false)
+  diseaseDescription String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([staffId, birthDate])
+  @@index([identityNumber])
 }
 
 model StaffQualification {
@@ -635,6 +714,8 @@ model PedagogicalLapse {
 
 model TeacherAssignment {
   id String @id @default(uuid())
+  active Boolean @default(true)
+  assignedAt DateTime @default(now())
   staffId String
   staff Staff @relation(fields:[staffId], references:[id])
   sectionId String

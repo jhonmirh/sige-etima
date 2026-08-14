@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Injectable, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Injectable, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 import { EducationModality, EnrollmentSubjectOrigin, GradingType, PendingStatus, ResultStatus, Role, StudentCondition } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
@@ -95,8 +95,6 @@ class AcademicYearDto {
   @IsOptional() @IsBoolean() active?: boolean;
 }
 
-class CloneSectionsDto { @IsString() sourceAcademicYearId!: string; }
-
 @Injectable()
 export class AcademicService {
   constructor(private db: PrismaService, private enrollmentService: EnrollmentService) {}
@@ -163,10 +161,9 @@ export class AcademicService {
     const specialtyName = this.normalizeAcademicText(d.specialtyName);
     const mentionName = this.normalizeAcademicText(d.mentionName);
     if (d.modality === EducationModality.MEDIA_TECNICA && !specialtyName) throw new BadRequestException('En Media Técnica debe indicar la especialidad');
-    if (d.hasMention && !mentionName) throw new BadRequestException('Indicó que el plan tiene mención; debe registrar el nombre de la mención');
-    if (!d.hasMention && mentionName) throw new BadRequestException('El plan fue marcado sin mención; elimine el nombre de la mención');
+    if (d.hasMention || mentionName) throw new BadRequestException('No se permiten menciones manuales dentro de un código de plan. Registre la denominación oficial completa del nuevo plan; cada código identifica una única opción académica.');
     const maxGrade = d.modality === EducationModality.MEDIA_TECNICA ? 6 : 5;
-    const titleName = d.hasMention && mentionName ? `${optionName} · MENCIÓN ${mentionName}` : optionName;
+    const titleName = optionName;
     return this.db.$transaction(async (tx) => {
       const plan = await tx.studyPlan.create({
         data: {
@@ -175,7 +172,7 @@ export class AcademicService {
           modality: d.modality,
           specialtyName,
           optionName,
-          hasMention: d.hasMention,
+          hasMention: false,
           officialCatalog: false,
           sourceReference: 'PLAN INCORPORADO MANUALMENTE POR LA INSTITUCIÓN',
           curriculumVerified: false,
@@ -185,7 +182,6 @@ export class AcademicService {
           effectiveFrom: new Date(),
         },
       });
-      if (d.hasMention && mentionName) await tx.mention.create({ data: { studyPlanId: plan.id, name: mentionName, active: true } });
       return tx.studyPlan.findUnique({ where: { id: plan.id }, include: { mentions: true, subjects: { include: { subject: true } } } });
     });
   }
@@ -203,6 +199,54 @@ export class AcademicService {
       }
     }
     return this.db.studyPlan.update({ where: { id }, data: { active, curriculumVerified: active ? true : current.curriculumVerified } });
+  }
+
+  async deleteStudyPlan(id: string) {
+    const plan = await this.db.studyPlan.findUniqueOrThrow({
+      where: { id },
+      include: {
+        subjects: { select: { subjectId: true } },
+        _count: { select: { enrollments: true, sections: true } },
+      },
+    });
+
+    if (plan.officialCatalog) {
+      throw new BadRequestException('Los planes del catálogo nacional no se eliminan. Puede inactivarlos para que no aparezcan en nuevas secciones o matrículas.');
+    }
+
+    if (plan._count.enrollments > 0 || plan._count.sections > 0) {
+      const details = [
+        plan._count.enrollments > 0 ? `${plan._count.enrollments} matrícula(s)` : null,
+        plan._count.sections > 0 ? `${plan._count.sections} sección(es)` : null,
+      ].filter(Boolean).join(' y ');
+      throw new BadRequestException(`No se puede eliminar el plan ${plan.code} porque ya tiene ${details}. Para preservar el histórico solo puede inactivarse.`);
+    }
+
+    const subjectIds = [...new Set(plan.subjects.map((row) => row.subjectId))];
+
+    await this.db.$transaction(async (tx) => {
+      // Mention y StudyPlanSubject usan onDelete:Cascade. Section/Enrollment no se
+      // eliminan jamás de forma automática; las validaciones anteriores lo impiden.
+      await tx.studyPlan.delete({ where: { id } });
+
+      // Las materias creadas exclusivamente para un plan manual quedarían huérfanas.
+      // Se limpian solo cuando ya no pertenecen a ninguna otra malla curricular.
+      if (subjectIds.length) {
+        await tx.subject.deleteMany({
+          where: {
+            id: { in: subjectIds },
+            plans: { none: {} },
+          },
+        });
+      }
+    });
+
+    return {
+      deleted: true,
+      id: plan.id,
+      code: plan.code,
+      message: `Plan ${plan.code} eliminado definitivamente.`,
+    };
   }
 
   async planCurriculum(id: string) {
@@ -306,31 +350,12 @@ export class AcademicService {
     });
   }
 
-  async createMention(d: MentionDto) {
-    const plan = await this.db.studyPlan.findUniqueOrThrow({ where: { id: d.studyPlanId } });
-    if (!plan.hasMention) throw new BadRequestException('El plan seleccionado está configurado sin mención');
-    const name = d.name.trim().replace(/\s+/g, ' ').toLocaleUpperCase('es-VE');
-    const existing = await this.db.mention.findUnique({
-      where: { studyPlanId_name: { studyPlanId: d.studyPlanId, name } },
-    });
-    if (existing?.active) throw new BadRequestException('Esa mención ya está registrada para el plan seleccionado');
-    if (existing && !existing.active) {
-      return this.db.mention.update({ where: { id: existing.id }, data: { active: true } });
-    }
-    return this.db.mention.create({ data: { studyPlanId: d.studyPlanId, name } });
+  async createMention(_d: MentionDto) {
+    throw new BadRequestException('Las menciones/opciones no se crean manualmente. Cada código de plan tiene una denominación académica única definida por el catálogo oficial.');
   }
 
-  async updateMention(id: string, d: UpdateMentionDto) {
-    const current = await this.db.mention.findUniqueOrThrow({ where: { id }, include: { studyPlan: true } });
-    const data: { name?: string; active?: boolean } = {};
-    if (d.name !== undefined) {
-      const name = d.name.trim().replace(/\s+/g, ' ').toLocaleUpperCase('es-VE');
-      const duplicate = await this.db.mention.findFirst({ where: { studyPlanId: current.studyPlanId, name, NOT: { id } } });
-      if (duplicate) throw new BadRequestException('Esa mención ya está registrada para el plan seleccionado');
-      data.name = name;
-    }
-    if (d.active !== undefined) data.active = d.active;
-    return this.db.mention.update({ where: { id }, data });
+  async updateMention(_id: string, _d: UpdateMentionDto) {
+    throw new BadRequestException('Las menciones/opciones de un plan no pueden renombrarse, activarse o inactivarse manualmente. Deben coincidir con la denominación oficial asociada al código del plan.');
   }
 
   async createSectionName(d: SectionNameDto) {
@@ -550,30 +575,6 @@ export class AcademicService {
     });
   }
 
-  async cloneSections(targetAcademicYearId: string, d: CloneSectionsDto) {
-    const [target, source] = await Promise.all([
-      this.db.academicYear.findUniqueOrThrow({ where: { id: targetAcademicYearId } }),
-      this.db.academicYear.findUniqueOrThrow({ where: { id: d.sourceAcademicYearId } }),
-    ]);
-    if (target.id === source.id) throw new BadRequestException('El año origen y destino deben ser diferentes');
-    if (target.academicClosedAt) throw new BadRequestException('No puede clonar secciones hacia un año escolar finalizado académicamente');
-    const rows = await this.db.section.findMany({ where: { academicYearId: source.id }, include: { mention: true } });
-    await this.db.section.createMany({
-      data: rows.map(s => ({
-        academicYearId: target.id,
-        studyPlanId: s.studyPlanId,
-        mentionId: s.mentionId,
-        mentionName: s.mention?.name || s.mentionName,
-        gradeLevel: s.gradeLevel,
-        name: s.name,
-        shift: s.shift,
-        capacity: s.capacity,
-      })),
-      skipDuplicates: true,
-    });
-    return this.sections(target.id);
-  }
-
   geography() {
     return this.db.federalState.findMany({
       include: { municipalities: { include: { parishes: true }, orderBy: { name: 'asc' } } },
@@ -601,6 +602,10 @@ export class AcademicController {
   @Roles(Role.ADMIN)
   @Post('plans/:id/assign')
   assignPlan(@Param('id') id: string) { return this.s.setStudyPlanActive(id, true); }
+
+  @Roles(Role.ADMIN)
+  @Delete('plans/:id')
+  deletePlan(@Param('id') id: string) { return this.s.deleteStudyPlan(id); }
 
   @Get('plans/:id/curriculum')
   curriculum(@Param('id') id: string) { return this.s.planCurriculum(id); }
@@ -638,10 +643,6 @@ export class AcademicController {
   @Roles(Role.ADMIN, Role.DIRECTOR)
   @Post('years/:id/finalize')
   finalizeYear(@Param('id') id: string, @CurrentUser() user: any) { return this.s.finalizeAcademicYear(id, user); }
-
-  @Roles(Role.ADMIN, Role.DIRECTOR)
-  @Post('years/:id/clone-sections')
-  clone(@Param('id') id: string, @Body() d: CloneSectionsDto) { return this.s.cloneSections(id, d); }
 
   @Roles(Role.ADMIN)
   @Post('section-names')

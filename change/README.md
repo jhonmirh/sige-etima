@@ -14,7 +14,7 @@ Sistema web para la Escuela Técnica Isaías Medina Angarita, construido como mo
 - **Fase 1 — Estudiantes + Representantes:** desarrollada de extremo a extremo en V2.0.1.
 - **Matrícula:** base funcional, pendiente de completar todos los flujos administrativos.
 - **Personal:** consulta/backend base; pendiente de completar toda la operación visual.
-- **Notas, materia pendiente y revisión:** motor/base parcial; UI operativa completa pendiente.
+- **Notas:** flujo operativo de lapsos, evaluaciones, primera/segunda forma, cierre de lapso y definitiva anual disponible desde V2.2.0; materia pendiente y revisión continúan como siguiente fase.
 - **Planes de estudio:** datos y modelo parametrizable; administración visual completa pendiente.
 - **Grupos estables:** base funcional parcial.
 - **Centro de reportes:** servicios iniciales; catálogo completo de reportes/filtros pendiente.
@@ -72,3 +72,14 @@ Ver `docs/10-fase2-matricula-reinscripcion.md`.
 - Las nóminas y listados quedan separadas y ordenadas por grado, mención y sección.
 - El plan 41049 incorpora inicialmente la mención `CIENCIAS AGRÍCOLAS Y PECUARIAS`.
 - Las secciones históricas conservan el nombre de la mención con el que fueron creadas.
+
+
+## V2.2.0 — Notas operativas
+- Selector por año, asignación docente y lapso.
+- 2–5 evaluaciones configurables con técnica, instrumento, fecha/hora y ponderación.
+- Primera y Segunda Forma por nómina con reglas de habilitación.
+- Cierre ponderado del lapso y resumen anual.
+- La media de los tres lapsos se muestra como sugerencia y requiere confirmación explícita para guardar la definitiva anual.
+- La condición académica se recalcula automáticamente cuando todas las materias del estudiante tienen definitiva.
+
+Ver `CHANGELOG-V2.2.0.md`.
