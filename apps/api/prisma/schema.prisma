@@ -788,6 +788,9 @@ model LapseGrade {
   lapseId String
   lapse PedagogicalLapse @relation(fields:[lapseId], references:[id], onDelete:Cascade)
   score Decimal? @db.Decimal(4,2)
+  // Inasistencias totales del estudiante en esta materia durante este lapso.
+  // Es opcional: null significa que no se registraron inasistencias.
+  absences Int?
   closedAt DateTime?
   @@unique([enrollmentId, teacherAssignmentId, lapseId])
 }

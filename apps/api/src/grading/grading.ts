@@ -42,6 +42,19 @@ function round2(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+function parseOptionalAbsences(value: unknown) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const text = String(value).trim();
+  if (!/^[1-9]\d*$/.test(text)) {
+    throw new BadRequestException('Las inasistencias son opcionales. Si se registran, deben ser un número entero positivo: 1, 2, 3...');
+  }
+  const amount = Number(text);
+  if (!Number.isSafeInteger(amount)) {
+    throw new BadRequestException('La cantidad de inasistencias no es válida');
+  }
+  return amount;
+}
+
 function parseObjective(value: unknown) {
   const text = String(value ?? '').trim().replace(',', '.');
   if (!/^\d+(?:\.\d+)?$/.test(text)) throw new BadRequestException('El objetivo es obligatorio y debe ser numérico. Ejemplos: 1, 1.1, 2.3');
@@ -369,7 +382,13 @@ export class GradingService {
     this.ensureLapseOpen(current.lapse);
     await this.assertAnnualNotFinalized(current.teacherAssignment);
     if (current._count.attempts > 0) throw new BadRequestException('No se puede eliminar una evaluación que ya tiene calificaciones registradas');
-    const closed = await this.db.lapseGrade.count({ where: { teacherAssignmentId: current.teacherAssignmentId, lapseId: current.lapseId } });
+    const closed = await this.db.lapseGrade.count({
+      where: {
+        teacherAssignmentId: current.teacherAssignmentId,
+        lapseId: current.lapseId,
+        OR: [{ closedAt: { not: null } }, { score: { not: null } }],
+      },
+    });
     if (closed > 0) throw new BadRequestException('No se puede eliminar una evaluación después de cerrar calificaciones del lapso');
     await this.db.assessment.delete({ where: { id: assessmentId } });
     const remaining = await this.db.assessment.findMany({ where: { teacherAssignmentId: current.teacherAssignmentId, lapseId: current.lapseId }, orderBy: { orderNumber: 'asc' } });
@@ -475,12 +494,12 @@ export class GradingService {
     return { ready: true, score: Number(first.score), reason: 'PRIMERA FORMA' };
   }
 
-  async closeLapse(enrollmentId: string, teacherAssignmentId: string, lapseId: string, user: any) {
+  async closeLapse(enrollmentId: string, teacherAssignmentId: string, lapseId: string, user: any, absences?: unknown) {
     await this.assertAssignmentAccess(teacherAssignmentId, user);
     const workspace = await this.workspace(teacherAssignmentId, lapseId, user);
     const student = workspace.students.find((s: any) => s.id === enrollmentId);
     if (!student) throw new BadRequestException('El estudiante no forma parte de esta asignación');
-    return this.closeOneStudentLapse(workspace, student);
+    return this.closeOneStudentLapse(workspace, student, absences);
   }
 
   private validateLapseCalculation(workspace: any) {
@@ -491,6 +510,19 @@ export class GradingService {
     const withoutObjective = assessments.filter((a: any) => a.objective === null || a.objective === undefined);
     if (withoutObjective.length) {
       throw new BadRequestException('Todas las evaluaciones deben tener un objetivo numérico antes de calcular la definitiva del lapso');
+    }
+    const lapseStart = new Date(workspace.lapse.startDate);
+    lapseStart.setUTCHours(0, 0, 0, 0);
+    const lapseEnd = new Date(workspace.lapse.endDate);
+    lapseEnd.setUTCHours(23, 59, 59, 999);
+    const outsideCalendar = assessments.filter((a: any) => {
+      if (!a.scheduledAt) return true;
+      const date = new Date(a.scheduledAt);
+      return date < lapseStart || date > lapseEnd;
+    });
+    if (outsideCalendar.length) {
+      const labels = outsideCalendar.map((a: any) => `Evaluación ${a.orderNumber}`).join(', ');
+      throw new BadRequestException(`${labels} ${outsideCalendar.length === 1 ? 'está' : 'están'} fuera de las fechas vigentes del lapso. Corrija la fecha antes de calcular la definitiva.`);
     }
     if (calculationMode === GradingCalculationMode.PERCENTUAL) {
       const total = assessments.reduce((acc: number, a: any) => acc + Number(a.weight), 0);
@@ -520,19 +552,111 @@ export class GradingService {
     return Math.round(accumulated / assessments.length);
   }
 
-  private async closeOneStudentLapse(workspace: any, student: any) {
+  private async closeOneStudentLapse(workspace: any, student: any, absencesInput?: unknown) {
     const { assignment, lapse } = workspace;
     this.ensureLapseOpen(lapse);
     this.validateLapseCalculation(workspace);
     const score = this.studentLapseScore(workspace, student);
+    const existing = workspace.lapseGrades?.find((g: any) => g.enrollmentId === student.id);
+    const absences = absencesInput === undefined ? (existing?.absences ?? null) : parseOptionalAbsences(absencesInput);
     return this.db.lapseGrade.upsert({
       where: { enrollmentId_teacherAssignmentId_lapseId: { enrollmentId: student.id, teacherAssignmentId: assignment.id, lapseId: lapse.id } },
-      update: { score, closedAt: new Date() },
-      create: { enrollmentId: student.id, teacherAssignmentId: assignment.id, lapseId: lapse.id, score, closedAt: new Date() },
+      update: { score, absences, closedAt: new Date() },
+      create: { enrollmentId: student.id, teacherAssignmentId: assignment.id, lapseId: lapse.id, score, absences, closedAt: new Date() },
     });
   }
 
-  async closeAllLapse(assignmentId: string, lapseId: string, user: any) {
+  async saveLapseAbsences(assignmentId: string, lapseId: string, user: any, rows: any[] = []) {
+    const assignment = await this.assertAssignmentAccess(assignmentId, user);
+    this.ensureYearOpen(assignment.section.academicYear.academicClosedAt);
+    if (!assignment.active) throw new BadRequestException('La asignación docente está inactiva');
+    await this.assertAnnualNotFinalized(assignment);
+
+    const lapse = await this.db.pedagogicalLapse.findUniqueOrThrow({ where: { id: lapseId } });
+    if (lapse.academicYearId !== assignment.section.academicYearId) {
+      throw new BadRequestException('El lapso no pertenece al año escolar de la asignación');
+    }
+    this.ensureLapseOpen(lapse);
+
+    const students = await this.eligibleEnrollments(assignment.sectionId, assignment.studyPlanSubjectId);
+    const eligibleIds = new Set(students.map((student) => student.id));
+    const currentRows = students.length
+      ? await this.db.lapseGrade.findMany({
+          where: { teacherAssignmentId: assignmentId, lapseId, enrollmentId: { in: students.map((student) => student.id) } },
+          select: { id: true, enrollmentId: true, absences: true },
+        })
+      : [];
+    const currentMap = new Map<string, (typeof currentRows)[number]>(
+      currentRows.map((row) => [row.enrollmentId, row] as const),
+    );
+
+    const submitted = new Map<string, number | null>();
+    for (const row of rows || []) {
+      const enrollmentId = String(row?.enrollmentId || '');
+      if (!eligibleIds.has(enrollmentId)) {
+        throw new BadRequestException('Uno de los registros de inasistencias no pertenece a la nómina activa de esta asignación');
+      }
+      submitted.set(enrollmentId, parseOptionalAbsences(row?.absences));
+    }
+
+    const changes: { enrollmentId: string; from: number | null; to: number | null }[] = [];
+    const ops: any[] = [];
+    let withAbsences = 0;
+
+    for (const student of students) {
+      const current = currentMap.get(student.id);
+      const next = submitted.has(student.id) ? (submitted.get(student.id) ?? null) : (current?.absences ?? null);
+      if (next !== null) withAbsences += 1;
+      const previous = current?.absences ?? null;
+      if (previous === next) continue;
+
+      changes.push({ enrollmentId: student.id, from: previous, to: next });
+      if (current) {
+        ops.push(this.db.lapseGrade.update({ where: { id: current.id }, data: { absences: next } }));
+      } else if (next !== null) {
+        ops.push(this.db.lapseGrade.create({
+          data: {
+            enrollmentId: student.id,
+            teacherAssignmentId: assignmentId,
+            lapseId,
+            absences: next,
+            score: null,
+            closedAt: null,
+          },
+        }));
+      }
+    }
+
+    if (ops.length) await this.db.$transaction(ops);
+
+    if (changes.length) {
+      await this.db.auditLog.create({
+        data: {
+          userId: user?.sub || null,
+          action: 'GUARDAR_INASISTENCIAS_LAPSO',
+          entity: 'TeacherAssignment',
+          entityId: assignmentId,
+          metadata: {
+            lapseId,
+            lapseNumber: lapse.number,
+            academicYear: assignment.section.academicYear.name,
+            subject: assignment.studyPlanSubject.subject.name,
+            section: `${assignment.section.gradeLevel}° ${assignment.section.name}`,
+            changes,
+          },
+        },
+      });
+    }
+
+    return {
+      ok: true,
+      processed: students.length,
+      changed: changes.length,
+      withAbsences,
+    };
+  }
+
+  async closeAllLapse(assignmentId: string, lapseId: string, user: any, absenceRows: any[] = []) {
     const assignment = await this.assertAssignmentAccess(assignmentId, user);
     this.ensureYearOpen(assignment.section.academicYear.academicClosedAt);
     await this.assertAnnualNotFinalized(assignment);
@@ -540,11 +664,23 @@ export class GradingService {
     this.ensureLapseOpen(workspace.lapse);
     this.validateLapseCalculation(workspace);
 
-    const rows: { enrollmentId: string; score: number }[] = [];
+    const eligibleIds = new Set(workspace.students.map((student: any) => student.id));
+    const absenceMap = new Map<string, number | null>();
+    for (const row of absenceRows || []) {
+      const enrollmentId = String(row?.enrollmentId || '');
+      if (!eligibleIds.has(enrollmentId)) {
+        throw new BadRequestException('Uno de los registros de inasistencias no pertenece a la nómina activa de esta asignación');
+      }
+      absenceMap.set(enrollmentId, parseOptionalAbsences(row?.absences));
+    }
+
+    const rows: { enrollmentId: string; score: number; absences: number | null }[] = [];
     const errors: string[] = [];
     for (const student of workspace.students) {
       try {
-        rows.push({ enrollmentId: student.id, score: this.studentLapseScore(workspace, student) });
+        const existing = workspace.lapseGrades?.find((g: any) => g.enrollmentId === student.id);
+        const absences = absenceMap.has(student.id) ? (absenceMap.get(student.id) ?? null) : (existing?.absences ?? null);
+        rows.push({ enrollmentId: student.id, score: this.studentLapseScore(workspace, student), absences });
       } catch (error: any) {
         errors.push(error?.message || `${student.student.firstName} ${student.student.lastName}: no se pudo calcular`);
       }
@@ -555,8 +691,8 @@ export class GradingService {
 
     const ops = rows.map((r) => this.db.lapseGrade.upsert({
       where: { enrollmentId_teacherAssignmentId_lapseId: { enrollmentId: r.enrollmentId, teacherAssignmentId: assignmentId, lapseId } },
-      update: { score: r.score, closedAt: new Date() },
-      create: { enrollmentId: r.enrollmentId, teacherAssignmentId: assignmentId, lapseId, score: r.score, closedAt: new Date() },
+      update: { score: r.score, absences: r.absences, closedAt: new Date() },
+      create: { enrollmentId: r.enrollmentId, teacherAssignmentId: assignmentId, lapseId, score: r.score, absences: r.absences, closedAt: new Date() },
     }));
     if (ops.length) await this.db.$transaction(ops);
     return { ok: true, closed: rows.length, rows, calculationMode: workspace.calculationMode };
@@ -667,6 +803,90 @@ export class GradingService {
         data: { status: LapseStatus.OPEN },
       });
     });
+  }
+
+
+  async updateLapseDates(lapseId: string, startDateRaw: unknown, endDateRaw: unknown) {
+    const lapse = await this.db.pedagogicalLapse.findUniqueOrThrow({
+      where: { id: lapseId },
+      include: { academicYear: true },
+    });
+    this.ensureYearOpen(lapse.academicYear.academicClosedAt);
+
+    const parseDateOnly = (value: unknown, label: string) => {
+      const text = String(value ?? '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+        throw new BadRequestException(`${label} es obligatoria y debe tener formato AAAA-MM-DD`);
+      }
+      const date = new Date(`${text}T00:00:00.000Z`);
+      if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== text) {
+        throw new BadRequestException(`${label} no es una fecha válida`);
+      }
+      return date;
+    };
+
+    const startDate = parseDateOnly(startDateRaw, 'La fecha Desde');
+    const endDate = parseDateOnly(endDateRaw, 'La fecha Hasta');
+    endDate.setUTCHours(23, 59, 59, 999);
+
+    if (startDate.getTime() > endDate.getTime()) {
+      throw new BadRequestException('La fecha Desde no puede ser posterior a la fecha Hasta');
+    }
+
+    const yearStart = new Date(lapse.academicYear.startDate);
+    yearStart.setUTCHours(0, 0, 0, 0);
+    const yearEnd = new Date(lapse.academicYear.endDate);
+    yearEnd.setUTCHours(23, 59, 59, 999);
+    if (startDate < yearStart || endDate > yearEnd) {
+      throw new BadRequestException(`Las fechas del lapso deben estar dentro del año escolar ${lapse.academicYear.name}`);
+    }
+
+    const siblings = await this.db.pedagogicalLapse.findMany({
+      where: { academicYearId: lapse.academicYearId, id: { not: lapseId } },
+      orderBy: { number: 'asc' },
+    });
+    const previous = siblings.filter((x) => x.number < lapse.number).at(-1);
+    const next = siblings.find((x) => x.number > lapse.number);
+    if (previous && startDate <= new Date(previous.endDate)) {
+      throw new BadRequestException(`La fecha Desde del Lapso ${lapse.number} debe ser posterior al Hasta del Lapso ${previous.number}`);
+    }
+    if (next && endDate >= new Date(next.startDate)) {
+      throw new BadRequestException(`La fecha Hasta del Lapso ${lapse.number} debe ser anterior al Desde del Lapso ${next.number}`);
+    }
+
+    // El calendario oficial del MPPE debe poder corregirse aunque ya existan evaluaciones.
+    // Antes se bloqueaba el cambio si una evaluación quedaba fuera del nuevo rango; eso hacía
+    // que el ADMIN viera las fechas editadas en pantalla, pero al recargar reaparecieran las
+    // fechas anteriores porque la actualización nunca llegó a persistirse.
+    // Ahora primero persistimos el calendario oficial y luego informamos qué evaluaciones
+    // históricas necesitan ajuste. Esas evaluaciones deberán corregirse antes de cerrar el lapso.
+    const updated = await this.db.pedagogicalLapse.update({
+      where: { id: lapseId },
+      data: { startDate, endDate },
+    });
+
+    const outside = await this.db.assessment.findMany({
+      where: {
+        lapseId,
+        scheduledAt: { not: null },
+        OR: [
+          { scheduledAt: { lt: startDate } },
+          { scheduledAt: { gt: endDate } },
+        ],
+      },
+      orderBy: { scheduledAt: 'asc' },
+      select: { id: true, orderNumber: true, title: true, scheduledAt: true },
+    });
+
+    return {
+      ...updated,
+      outOfRangeAssessments: outside.map((a) => ({
+        id: a.id,
+        orderNumber: a.orderNumber,
+        title: a.title,
+        scheduledAt: a.scheduledAt,
+      })),
+    };
   }
 
   async setCalculationMode(assignmentId: string, lapseId: string, user: any, mode: GradingCalculationMode) {
@@ -790,6 +1010,17 @@ export class GradingController {
     return this.s.setLapseActive(lapseId, !!active);
   }
 
+
+  @Roles(Role.ADMIN)
+  @Patch('lapses/:lapseId/dates')
+  lapseDates(
+    @Param('lapseId') lapseId: string,
+    @Body('startDate') startDate: string,
+    @Body('endDate') endDate: string,
+  ) {
+    return this.s.updateLapseDates(lapseId, startDate, endDate);
+  }
+
   @Roles(Role.ADMIN, Role.DOCENTE)
   @Patch('assignments/:assignmentId/lapses/:lapseId/calculation-mode')
   calculationMode(
@@ -839,11 +1070,31 @@ export class GradingController {
 
   @Roles(Role.ADMIN, Role.DOCENTE)
   @Post('lapses/:lapseId/assignments/:assignmentId/students/:enrollmentId/close')
-  close(@Param('enrollmentId') e: string, @Param('assignmentId') a: string, @Param('lapseId') l: string, @CurrentUser() user: any) { return this.s.closeLapse(e, a, l, user); }
+  close(
+    @Param('enrollmentId') e: string,
+    @Param('assignmentId') a: string,
+    @Param('lapseId') l: string,
+    @CurrentUser() user: any,
+    @Body('absences') absences?: unknown,
+  ) { return this.s.closeLapse(e, a, l, user, absences); }
+
+  @Roles(Role.ADMIN, Role.DOCENTE)
+  @Post('assignments/:assignmentId/lapses/:lapseId/absences')
+  saveAbsences(
+    @Param('assignmentId') a: string,
+    @Param('lapseId') l: string,
+    @CurrentUser() user: any,
+    @Body('rows') rows: any[],
+  ) { return this.s.saveLapseAbsences(a, l, user, rows || []); }
 
   @Roles(Role.ADMIN, Role.DOCENTE)
   @Post('assignments/:assignmentId/lapses/:lapseId/close-all')
-  closeAll(@Param('assignmentId') a: string, @Param('lapseId') l: string, @CurrentUser() user: any) { return this.s.closeAllLapse(a, l, user); }
+  closeAll(
+    @Param('assignmentId') a: string,
+    @Param('lapseId') l: string,
+    @CurrentUser() user: any,
+    @Body('rows') rows: any[],
+  ) { return this.s.closeAllLapse(a, l, user, rows || []); }
 
   @Roles(Role.ADMIN, Role.DIRECTOR, Role.DOCENTE, Role.SECRETARIA)
   @Get('assignments/:assignmentId/annual')

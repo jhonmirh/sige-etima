@@ -19,7 +19,7 @@ import {
   UserRoundCog,
 } from 'lucide-react';
 import Shell from '@/components/Shell';
-import { API, api, token } from '@/lib/api';
+import { API, api, notify, token } from '@/lib/api';
 
 type AttemptDraft = { attendance: 'PRESENTE' | 'INASISTENTE'; score: string; notes?: string };
 type DraftMap = Record<string, Record<string, AttemptDraft>>;
@@ -69,12 +69,17 @@ export default function GradesPage() {
   const [firstDraft, setFirstDraft] = useState<DraftMap>({});
   const [secondDraft, setSecondDraft] = useState<DraftMap>({});
   const [annualDraft, setAnnualDraft] = useState<Record<string, string>>({});
+  const [absenceDraft, setAbsenceDraft] = useState<Record<string, string>>({});
+  const [absenceErrors, setAbsenceErrors] = useState<Record<string, string>>({});
+  const [absenceSaveMsg, setAbsenceSaveMsg] = useState('');
+  const [absenceSaveErr, setAbsenceSaveErr] = useState('');
   const [assessmentForm, setAssessmentForm] = useState(emptyAssessmentForm(false));
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   const [closeErr, setCloseErr] = useState('');
   const [scoreErrors, setScoreErrors] = useState<Record<string, string>>({});
   const [assessmentFeedback, setAssessmentFeedback] = useState<Record<string, string>>({});
+  const [lapseDateDrafts, setLapseDateDrafts] = useState<Record<string, { startDate: string; endDate: string }>>({});
   const [loading, setLoading] = useState(false);
 
   const selectedYear = context?.years?.find((y: any) => y.id === yearId);
@@ -156,8 +161,17 @@ export default function GradesPage() {
           second[a.id][student.id] = { attendance: s?.attendance || 'PRESENTE', score: s?.score === null || s?.score === undefined ? '' : scoreInputText(s.score), notes: s?.notes || '' };
         }
       }
+      const absences: Record<string, string> = {};
+      for (const student of data.students || []) {
+        const grade = data.lapseGrades?.find((x: any) => x.enrollmentId === student.id);
+        absences[student.id] = grade?.absences === null || grade?.absences === undefined ? '' : String(grade.absences);
+      }
       setFirstDraft(first);
       setSecondDraft(second);
+      setAbsenceDraft(absences);
+      setAbsenceErrors({});
+      setAbsenceSaveMsg('');
+      setAbsenceSaveErr('');
       setCloseErr('');
       setErr('');
     } catch (e: any) {
@@ -191,6 +205,17 @@ export default function GradesPage() {
   }
 
   useEffect(() => { loadContext(); }, []);
+
+  useEffect(() => {
+    const next: Record<string, { startDate: string; endDate: string }> = {};
+    for (const lapse of selectedYear?.lapses || []) {
+      next[lapse.id] = {
+        startDate: String(lapse.startDate || '').slice(0, 10),
+        endDate: String(lapse.endDate || '').slice(0, 10),
+      };
+    }
+    setLapseDateDrafts(next);
+  }, [selectedYear]);
 
   useEffect(() => {
     const lapses = selectedYear?.lapses || [];
@@ -349,6 +374,87 @@ export default function GradesPage() {
         : `Lapso${number} desactivado correctamente.`);
       setErr('');
     } catch (e: any) { setErr(e.message); } finally { setLoading(false); }
+  }
+
+  function updateLapseDateDraft(targetLapseId: string, key: 'startDate' | 'endDate', value: string) {
+    setLapseDateDrafts((prev) => ({
+      ...prev,
+      [targetLapseId]: {
+        startDate: prev[targetLapseId]?.startDate || '',
+        endDate: prev[targetLapseId]?.endDate || '',
+        [key]: value,
+      },
+    }));
+  }
+
+  async function saveLapseDates(targetLapseId: string) {
+    if (!isAdmin || !yearId) return;
+    const draft = lapseDateDrafts[targetLapseId];
+    if (!draft?.startDate || !draft?.endDate) {
+      setErr('Debe indicar las fechas Desde y Hasta del lapso.');
+      return;
+    }
+    if (draft.startDate > draft.endDate) {
+      setErr('La fecha Desde no puede ser posterior a la fecha Hasta.');
+      return;
+    }
+    try {
+      setLoading(true);
+      const updated = await api(`/grading/lapses/${targetLapseId}/dates`, {
+        method: 'PATCH',
+        body: JSON.stringify({ startDate: draft.startDate, endDate: draft.endDate }),
+        successMessage: false,
+      });
+
+      // Actualiza inmediatamente la fuente de verdad local con la respuesta persistida del API.
+      // De esta forma la pantalla nunca conserva un borrador que parezca guardado si el backend
+      // no lo almacenó y tampoco vuelve visualmente al calendario inicial al crear evaluaciones.
+      setContext((prev: any) => prev ? ({
+        ...prev,
+        years: (prev.years || []).map((year: any) => year.id !== yearId ? year : ({
+          ...year,
+          lapses: (year.lapses || []).map((l: any) => l.id !== targetLapseId ? l : ({
+            ...l,
+            startDate: updated.startDate,
+            endDate: updated.endDate,
+          })),
+        })),
+      }) : prev);
+      setLapseDateDrafts((prev) => ({
+        ...prev,
+        [targetLapseId]: {
+          startDate: String(updated.startDate || draft.startDate).slice(0, 10),
+          endDate: String(updated.endDate || draft.endDate).slice(0, 10),
+        },
+      }));
+
+      await loadContext(yearId, teacherId, assignmentId);
+      if (assignmentId && lapseId === targetLapseId) await loadWorkspace(assignmentId, targetLapseId);
+
+      const outsideCount = Array.isArray(updated?.outOfRangeAssessments) ? updated.outOfRangeAssessments.length : 0;
+      const message = outsideCount
+        ? `Fechas del Lapso ${updated?.number || ''} guardadas. ${outsideCount} evaluación(es) existente(s) quedó(aron) fuera del nuevo período y debe(n) corregirse antes del cierre.`
+        : `Fechas del Lapso ${updated?.number || ''} guardadas correctamente: ${draft.startDate} / ${draft.endDate}.`;
+      setMsg(message);
+      notify(message, outsideCount ? 'info' : 'success', outsideCount ? 4200 : 2200);
+      setErr('');
+    } catch (e: any) {
+      // Si el API rechaza el cambio, restauramos en pantalla las fechas realmente persistidas.
+      const persisted = selectedYear?.lapses?.find((l: any) => l.id === targetLapseId);
+      if (persisted) {
+        setLapseDateDrafts((prev) => ({
+          ...prev,
+          [targetLapseId]: {
+            startDate: String(persisted.startDate || '').slice(0, 10),
+            endDate: String(persisted.endDate || '').slice(0, 10),
+          },
+        }));
+      }
+      setErr(e.message);
+      notify(`No se guardaron las fechas: ${e.message}`, 'error', 4800);
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function changeCalculationMode(mode: CalculationMode) {
@@ -545,6 +651,76 @@ export default function GradesPage() {
     } catch (e: any) { setErr(e.message); } finally { setLoading(false); }
   }
 
+  function absenceValidationMessage(value: string) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    if (!/^[1-9]\d*$/.test(text)) return 'Use solo números enteros positivos: 1, 2, 3...';
+    return '';
+  }
+
+  function updateAbsence(enrollmentId: string, value: string) {
+    // El campo acepta únicamente dígitos. Vacío significa que el estudiante no tuvo inasistencias.
+    if (value && !/^\d+$/.test(value)) return;
+    setAbsenceDraft((prev) => ({ ...prev, [enrollmentId]: value }));
+    const message = absenceValidationMessage(value);
+    setAbsenceErrors((prev) => {
+      const next = { ...prev };
+      if (message) next[enrollmentId] = message;
+      else delete next[enrollmentId];
+      return next;
+    });
+    setAbsenceSaveMsg('');
+    setAbsenceSaveErr('');
+    if (!message) setCloseErr('');
+  }
+
+  async function saveAbsences() {
+    if (!workspace || !canGrade) {
+      setAbsenceSaveMsg('');
+      setAbsenceSaveErr('El lapso debe estar ACTIVO para guardar o modificar inasistencias.');
+      return;
+    }
+
+    const invalidAbsence = (workspace.students || []).find((student: any) => absenceValidationMessage(absenceDraft[student.id] || ''));
+    if (invalidAbsence) {
+      const message = absenceValidationMessage(absenceDraft[invalidAbsence.id] || '');
+      setAbsenceErrors((prev) => ({ ...prev, [invalidAbsence.id]: message }));
+      setAbsenceSaveMsg('');
+      setAbsenceSaveErr(`${personName(invalidAbsence.student)}: ${message}`);
+      setTimeout(() => document.getElementById(`absences-${invalidAbsence.id}`)?.focus(), 30);
+      return;
+    }
+
+    const rows = (workspace.students || []).map((student: any) => ({
+      enrollmentId: student.id,
+      absences: String(absenceDraft[student.id] || '').trim() || null,
+    }));
+
+    try {
+      setLoading(true);
+      setAbsenceSaveMsg('');
+      setAbsenceSaveErr('');
+      const result = await api(`/grading/assignments/${assignmentId}/lapses/${lapseId}/absences`, {
+        method: 'POST',
+        body: JSON.stringify({ rows }),
+      });
+      await loadWorkspace();
+      const withAbsences = Number(result?.withAbsences || 0);
+      const message = withAbsences > 0
+        ? `Inasistencias del lapso guardadas correctamente. ${withAbsences} estudiante(s) con inasistencias registradas.`
+        : 'Inasistencias del lapso guardadas correctamente. No se registraron inasistencias para esta materia.';
+      setAbsenceSaveMsg(message);
+      setMsg(message);
+      setErr('');
+      notify(message, 'success', 2600);
+    } catch (e: any) {
+      setAbsenceSaveMsg('');
+      setAbsenceSaveErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function closeLapse() {
     if (!workspace || !canGrade) { setCloseErr('El lapso debe estar ACTIVO para calcular la definitiva.'); return; }
     const count = workspace.assessments?.length || 0;
@@ -562,6 +738,16 @@ export default function GradesPage() {
       setCloseErr(`No se puede calcular: la ponderación porcentual debe sumar exactamente 100%. Actualmente suma ${Number(workspace.percentageTotal).toFixed(2)}%.`);
       return;
     }
+    const unsavedAbsence = (workspace.students || []).find((student: any) => {
+      const saved = workspace.lapseGrades?.find((grade: any) => grade.enrollmentId === student.id)?.absences;
+      const savedText = saved === null || saved === undefined ? '' : String(saved);
+      return String(absenceDraft[student.id] || '').trim() !== savedText;
+    });
+    if (unsavedAbsence) {
+      setCloseErr('Hay cambios de inasistencias sin guardar. Presione “Guardar inasistencias” antes de calcular la definitiva del lapso.');
+      setTimeout(() => document.getElementById(`absences-${unsavedAbsence.id}`)?.focus(), 30);
+      return;
+    }
     const formula = workspace.calculationMode === 'PERCENTUAL'
       ? 'El sistema aplicará los porcentajes registrados, cuya suma debe ser 100%.'
       : 'El sistema sumará las evaluaciones, dividirá entre la cantidad registrada y redondeará el resultado final sin decimales.';
@@ -569,8 +755,9 @@ export default function GradesPage() {
     try {
       setLoading(true);
       setCloseErr('');
-      const r = await api(`/grading/assignments/${assignmentId}/lapses/${lapseId}/close-all`, { method: 'POST' });
+      const r = await api(`/grading/assignments/${assignmentId}/lapses/${lapseId}/close-all`, { method: 'POST', body: JSON.stringify({}) });
       await loadWorkspace();
+      setAbsenceSaveMsg('');
       setMsg(`Definitiva del lapso calculada para ${r.closed} estudiante(s).`);
       setErr('');
     } catch (e: any) {
@@ -645,6 +832,11 @@ export default function GradesPage() {
         {selectedYear.lapses?.map((l:any)=><div className="lapse-control-item" key={l.id}>
           <span>Lapso {l.number}</span><strong>{String(l.startDate).slice(0,10)} / {String(l.endDate).slice(0,10)}</strong>
           <div className="row-actions" style={{marginTop:10}}><span className={`status ${l.status==='OPEN'?'ok':'warn'}`}>{lapseStatusLabel(l.status)}</span><button type="button" className={`btn ${l.status==='OPEN'?'secondary':''} mini-btn`} onClick={()=>setLapseActive(l.id,l.status!=='OPEN')} disabled={loading}>{l.status==='OPEN'?<><Lock size={14}/> Desactivar</>:<><Unlock size={14}/> Activar</>}</button></div>
+          <div className="lapse-date-editor">
+            <div><label>Desde</label><input className="input" type="date" value={lapseDateDrafts[l.id]?.startDate || ''} onChange={e=>updateLapseDateDraft(l.id,'startDate',e.target.value)} disabled={loading || !!selectedYear.academicClosedAt}/></div>
+            <div><label>Hasta</label><input className="input" type="date" value={lapseDateDrafts[l.id]?.endDate || ''} onChange={e=>updateLapseDateDraft(l.id,'endDate',e.target.value)} disabled={loading || !!selectedYear.academicClosedAt}/></div>
+          </div>
+          <button type="button" className="btn secondary mini-btn lapse-date-save" onClick={()=>saveLapseDates(l.id)} disabled={loading || !!selectedYear.academicClosedAt}><Save size={14}/> Guardar fechas</button>
         </div>)}
       </div>
     </section>}
@@ -687,7 +879,7 @@ export default function GradesPage() {
           {assessmentForm.technique==='OTRA'&&<div><label>Indique otra técnica *</label><input className="input uppercase" value={assessmentForm.techniqueOther} onChange={e=>setAssessmentForm({...assessmentForm,techniqueOther:e.target.value.toUpperCase()})} required disabled={(assessmentForm.id?!canEditAssessment:!canGrade)||objectiveRepairMode}/></div>}
           <div><label>Instrumento *</label><select className="input" value={assessmentForm.instrument} onChange={e=>setAssessmentForm({...assessmentForm,instrument:e.target.value,instrumentOther:e.target.value==='OTRO'?assessmentForm.instrumentOther:''})} required disabled={(assessmentForm.id?!canEditAssessment:!canGrade)||objectiveRepairMode}><option value="">SELECCIONE</option>{INSTRUMENTS.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
           {assessmentForm.instrument==='OTRO'&&<div><label>Indique otro instrumento *</label><input className="input uppercase" value={assessmentForm.instrumentOther} onChange={e=>setAssessmentForm({...assessmentForm,instrumentOther:e.target.value.toUpperCase()})} required disabled={(assessmentForm.id?!canEditAssessment:!canGrade)||objectiveRepairMode}/></div>}
-          <div><label>Fecha y hora *</label><input className="input" type="datetime-local" value={assessmentForm.scheduledAt} onChange={e=>setAssessmentForm({...assessmentForm,scheduledAt:e.target.value})} required disabled={(assessmentForm.id?!canEditAssessment:!canGrade)||objectiveRepairMode}/><small className="muted">Lunes a viernes · 07:00 a. m. a 06:00 p. m.</small></div>
+          <div><label>Fecha y hora *</label><input className="input" type="datetime-local" min={workspace?.lapse?.startDate?`${String(workspace.lapse.startDate).slice(0,10)}T07:00`:undefined} max={workspace?.lapse?.endDate?`${String(workspace.lapse.endDate).slice(0,10)}T18:00`:undefined} value={assessmentForm.scheduledAt} onChange={e=>setAssessmentForm({...assessmentForm,scheduledAt:e.target.value})} required disabled={(assessmentForm.id?!canEditAssessment:!canGrade)||objectiveRepairMode}/><small className="muted">Período vigente: {String(workspace?.lapse?.startDate||'').slice(0,10)} al {String(workspace?.lapse?.endDate||'').slice(0,10)} · Lunes a viernes · 07:00 a. m. a 06:00 p. m.</small></div>
           {workspace.calculationMode==='PERCENTUAL'&&<div><label>Ponderación (%) *</label><input className="input" type="number" min="0.01" max="100" step="0.01" value={assessmentForm.weight} onChange={e=>setAssessmentForm({...assessmentForm,weight:e.target.value})} required disabled={(assessmentForm.id?!canEditAssessment:!canGrade)||objectiveRepairMode}/></div>}
         </div><div className="row-actions"><button className="btn" disabled={loading||objectiveDuplicate||(objectiveRepairMode?!canRepairPendingObjective:(assessmentForm.id?!canEditAssessment:!canGrade))}>{objectiveRepairMode?<><Save size={16}/> Guardar objetivo pendiente</>:assessmentForm.id?<><Save size={16}/> Guardar cambios</>:<><Plus size={16}/> Agregar evaluación</>}</button>{assessmentForm.id&&<button type="button" className="btn secondary" onClick={()=>setAssessmentForm(emptyAssessmentForm(workspace.calculationMode==='PERCENTUAL'))}>Cancelar edición</button>}</div>
       </form>}
@@ -716,9 +908,12 @@ export default function GradesPage() {
       <div className="section-title"><div><h2>Definitiva del lapso</h2><p className="muted">Se usa segunda forma cuando fue presentada; de lo contrario conserva primera forma. La inasistencia en primera forma computa 0.</p></div></div>
       <div className="card">
         <div className="info-banner"><div><strong>MÉTODO: {workspace.calculationMode==='PERCENTUAL'?'PORCENTUAL':'ACUMULATIVA'}</strong><span>{workspace.calculationMode==='PERCENTUAL'?`Ponderación actual: ${Number(workspace.percentageTotal).toFixed(2)}%. El cierre exige exactamente 100%.`:'Promedio simple de las evaluaciones y redondeo final sin decimales.'}</span></div></div>
-        <div className="table-wrap"><table><thead><tr><th>N°</th><th>Estudiante</th><th>Definitiva lapso {workspace.lapse.number}</th><th>Estado</th></tr></thead><tbody>{workspace.students.map((s:any)=>{const g=workspace.lapseGrades.find((x:any)=>x.enrollmentId===s.id);return <tr key={s.id}><td>{s.listNumber??'PROV.'}</td><td>{personName(s.student)}</td><td><strong>{gradeText(g?.score)}</strong></td><td>{g?<span className="status ok">CALCULADA</span>:<span className="status neutral">PENDIENTE</span>}</td></tr>})}</tbody></table></div>
+        <div className="attendance-note"><strong>INASISTENCIAS DEL LAPSO</strong><span>Campo opcional por estudiante y materia. Déjelo vacío si no tuvo inasistencias. Solo admite números enteros positivos: 1, 2, 3...</span></div>
+        <div className="table-wrap lapse-final-table"><table><thead><tr><th>N°</th><th>Estudiante</th><th>Definitiva lapso {workspace.lapse.number}</th><th>Inasistencias</th><th>Estado</th></tr></thead><tbody>{workspace.students.map((s:any)=>{const g=workspace.lapseGrades.find((x:any)=>x.enrollmentId===s.id);const calculated=g?.score!==null&&g?.score!==undefined;return <tr key={s.id}><td>{s.listNumber??'PROV.'}</td><td>{personName(s.student)}</td><td><strong>{gradeText(g?.score)}</strong></td><td>{canTranscribe?<div className="absence-field"><input id={`absences-${s.id}`} className={`input absence-input ${absenceErrors[s.id]?'input-invalid':''}`} type="text" inputMode="numeric" pattern="[1-9][0-9]*" placeholder="—" value={absenceDraft[s.id]||''} disabled={!canGrade} aria-invalid={!!absenceErrors[s.id]} onChange={e=>updateAbsence(s.id,e.target.value)}/>{absenceErrors[s.id]&&<small className="score-error"><TriangleAlert size={13}/>{absenceErrors[s.id]}</small>}</div>:<strong>{g?.absences??'—'}</strong>}</td><td>{calculated?<span className="status ok">CALCULADA</span>:<span className="status neutral">PENDIENTE</span>}</td></tr>})}</tbody></table></div>
+        {absenceSaveErr&&<div className="alert" style={{marginTop:14}}><TriangleAlert size={17}/> {absenceSaveErr}</div>}
+        {absenceSaveMsg&&<div className="alert success" style={{marginTop:14}}><CheckCircle2 size={17}/> {absenceSaveMsg}</div>}
         {closeErr&&<div className="alert" style={{marginTop:14}}><TriangleAlert size={17}/> {closeErr}</div>}
-        {canTranscribe&&<div className="row-actions"><button className="btn" disabled={!canGrade||loading} onClick={closeLapse}><Calculator size={16}/> Calcular definitiva del lapso</button></div>}
+        {canTranscribe&&<div className="row-actions"><button className="btn secondary" disabled={!canGrade||loading} onClick={saveAbsences}><Save size={16}/> Guardar inasistencias</button><button className="btn" disabled={!canGrade||loading} onClick={closeLapse}><Calculator size={16}/> Calcular definitiva del lapso</button></div>}
       </div>
 
       <div className="section-title"><div><h2>Definitiva anual de la asignatura</h2><p className="muted">El promedio de los lapsos se presenta como sugerencia; no se guarda hasta que ADMINISTRADOR o DOCENTE responsable lo confirme.</p></div><button className="btn secondary" onClick={()=>loadAnnual()}><Calculator size={16}/> Cargar resumen anual</button></div>

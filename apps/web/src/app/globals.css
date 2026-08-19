@@ -335,3 +335,15 @@ button,.btn{transition:transform .10s ease,box-shadow .14s ease,filter .14s ease
 @keyframes sige-toast-in{from{opacity:0;transform:translate(-50%,-12px) scale(.98)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
 @media(max-width:600px){.global-toast{top:10px;font-size:13px;padding:12px;min-width:calc(100vw - 20px);max-width:calc(100vw - 20px)}}
 @media(prefers-reduced-motion:reduce){.global-toast{animation:none}}
+
+/* V2.2.2.7 — Fechas de lapsos administrables */
+.lapse-date-editor{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+.lapse-date-editor label{display:block;margin-bottom:5px;font-size:12px;font-weight:800;color:var(--muted)}
+.lapse-date-editor .input{min-width:0}
+.lapse-date-save{margin-top:8px;justify-self:start}
+@media(max-width:600px){.lapse-date-editor{grid-template-columns:1fr}.lapse-date-save{width:100%;justify-content:center}}
+
+/* V2.2.2.9 · Inasistencias por materia y lapso */
+.attendance-note{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin:14px 0;padding:11px 13px;border:1px solid var(--line);border-radius:12px;background:var(--bg)}
+.attendance-note strong{font-size:12px;color:var(--navy2);white-space:nowrap}.attendance-note span{font-size:12px;color:var(--muted);line-height:1.45}
+.lapse-final-table table{min-width:860px}.absence-field{display:grid;gap:6px;min-width:130px}.absence-input{width:105px;min-width:90px;padding:8px 9px;min-height:38px}.absence-field .input-invalid{border-color:#d92d20!important;background:color-mix(in srgb,var(--panel) 92%,#fee4e2)!important;box-shadow:0 0 0 3px #d92d2018!important}
