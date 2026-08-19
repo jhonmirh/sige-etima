@@ -298,7 +298,9 @@ export class GradingService {
     });
     await this.assertAssignmentAccess(current.teacherAssignmentId, user);
     this.ensureYearOpen(current.teacherAssignment.section.academicYear.academicClosedAt);
-    this.ensureLapseOpen(current.lapse);
+    // El ADMINISTRADOR puede corregir metadatos de evaluaciones existentes aunque el lapso
+    // esté inactivo. El DOCENTE mantiene la regla de seguridad: solo edita con lapso activo.
+    if (user?.role === Role.DOCENTE) this.ensureLapseOpen(current.lapse);
     await this.assertAnnualNotFinalized(current.teacherAssignment);
     const title = String(data.title ?? current.title).trim().toLocaleUpperCase('es-VE');
     const technique = String(data.technique ?? current.technique ?? '').trim().toLocaleUpperCase('es-VE');
@@ -314,8 +316,18 @@ export class GradingService {
     if (calculationMode === GradingCalculationMode.PERCENTUAL && (!Number.isFinite(weight) || weight <= 0 || weight > 100)) {
       throw new BadRequestException('En modalidad PORCENTUAL, la ponderación de cada evaluación debe ser mayor que 0 y no superar 100%');
     }
-    const scheduledAt = this.validateAssessmentDates(current.lapse, data.scheduledAt ?? current.scheduledAt);
-    await this.validateAssessmentChronology(current.teacherAssignmentId, current.lapseId, scheduledAt, current.orderNumber, assessmentId);
+    let scheduledAt = current.scheduledAt;
+    const requestedScheduledAt = data.scheduledAt;
+    const dateWasSupplied = requestedScheduledAt !== undefined && requestedScheduledAt !== null && String(requestedScheduledAt).trim() !== '';
+    const requestedDate = dateWasSupplied ? new Date(requestedScheduledAt) : null;
+    const dateChanged = !!requestedDate && !Number.isNaN(requestedDate.getTime()) && (!current.scheduledAt || requestedDate.getTime() !== current.scheduledAt.getTime());
+    // No revalidar automáticamente una fecha histórica que no fue modificada. Esto permite
+    // corregir objetivo, contenido, técnica o instrumento de evaluaciones antiguas sin que
+    // reglas incorporadas posteriormente bloqueen la actualización.
+    if (dateChanged) {
+      scheduledAt = this.validateAssessmentDates(current.lapse, requestedScheduledAt);
+      await this.validateAssessmentChronology(current.teacherAssignmentId, current.lapseId, scheduledAt, current.orderNumber, assessmentId);
+    }
     return this.db.assessment.update({ where: { id: assessmentId }, data: { title, objective, technique, instrument, weight, scheduledAt } });
   }
 
@@ -630,9 +642,30 @@ export class GradingService {
       include: { academicYear: true },
     });
     this.ensureYearOpen(lapse.academicYear.academicClosedAt);
-    return this.db.pedagogicalLapse.update({
-      where: { id: lapseId },
-      data: { status: active ? LapseStatus.OPEN : LapseStatus.PLANNED },
+
+    if (!active) {
+      return this.db.pedagogicalLapse.update({
+        where: { id: lapseId },
+        data: { status: LapseStatus.PLANNED },
+      });
+    }
+
+    // Seguridad académica: solo un lapso puede quedar ACTIVO por año escolar.
+    // Al activar uno nuevo, cualquier otro lapso que todavía estuviera OPEN vuelve a PLANNED.
+    // Los lapsos CLOSED no se alteran.
+    return this.db.$transaction(async (tx) => {
+      await tx.pedagogicalLapse.updateMany({
+        where: {
+          academicYearId: lapse.academicYearId,
+          id: { not: lapseId },
+          status: LapseStatus.OPEN,
+        },
+        data: { status: LapseStatus.PLANNED },
+      });
+      return tx.pedagogicalLapse.update({
+        where: { id: lapseId },
+        data: { status: LapseStatus.OPEN },
+      });
     });
   }
 

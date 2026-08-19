@@ -95,9 +95,16 @@ export default function GradesPage() {
   const selectedLapse = selectedYear?.lapses?.find((l: any) => l.id === lapseId);
   const lapseIsOpen = selectedLapse?.status === 'OPEN';
   const canGrade = canTranscribe && lapseIsOpen && !!assignmentId && !!lapseId;
+  // El ADMIN puede corregir metadatos de una evaluación aunque el lapso esté inactivo,
+  // siempre que el año académico no esté cerrado. El DOCENTE solo edita con lapso activo.
+  const canEditAssessment = !!assignmentId && !!lapseId && !selectedYear?.academicClosedAt && (isAdmin || (isTeacher && lapseIsOpen));
   const editingAssessment = assessmentForm.id ? workspace?.assessments?.find((a: any) => a.id === assessmentForm.id) : null;
   const objectiveRepairMode = !!assessmentForm.id && (editingAssessment?.objective === null || editingAssessment?.objective === undefined);
-  const canRepairPendingObjective = objectiveRepairMode && (canGrade || (isAdmin && !selectedYear?.academicClosedAt));
+  const canRepairPendingObjective = objectiveRepairMode && canEditAssessment;
+  const objectiveTextLive = String(assessmentForm.objective || '').trim().replace(',', '.');
+  const objectiveDuplicate = !!objectiveTextLive && !!workspace?.assessments?.some((a: any) =>
+    a.id !== assessmentForm.id && a.objective !== null && a.objective !== undefined && Number(a.objective) === Number(objectiveTextLive)
+  );
 
   async function loadContext(targetYear?: string, preferredTeacher?: string, preferredAssignment?: string) {
     try {
@@ -319,10 +326,27 @@ export default function GradesPage() {
     if (!isAdmin) return;
     try {
       setLoading(true);
-      await api(`/grading/lapses/${targetLapseId}/active`, { method: 'PATCH', body: JSON.stringify({ active }) });
+      const updated = await api(`/grading/lapses/${targetLapseId}/active`, { method: 'PATCH', body: JSON.stringify({ active }) });
+
+      // Si el ADMIN activa un lapso desde las tarjetas de control, ese mismo lapso pasa a ser
+      // inmediatamente el lapso de trabajo. Antes podía quedar seleccionado el lapso anterior
+      // (ya inactivo), haciendo que "Agregar evaluación" siguiera bloqueado aunque otro lapso
+      // apareciera como ACTIVO en pantalla.
+      if (active) {
+        setLapseId(targetLapseId);
+        setAssessmentForm(emptyAssessmentForm(false));
+        setAnnual(null);
+      }
+
       await loadContext(yearId, teacherId, assignmentId);
-      if (targetLapseId === lapseId && assignmentId) await loadWorkspace(assignmentId, targetLapseId);
-      setMsg(`Lapso ${active ? 'activado' : 'desactivado'} correctamente.`);
+      if (assignmentId && (active || targetLapseId === lapseId)) {
+        await loadWorkspace(assignmentId, targetLapseId);
+      }
+
+      const number = updated?.number ? ` ${updated.number}` : '';
+      setMsg(active
+        ? `Lapso${number} activado y seleccionado para trabajar. Ya puede registrar evaluaciones.`
+        : `Lapso${number} desactivado correctamente.`);
       setErr('');
     } catch (e: any) { setErr(e.message); } finally { setLoading(false); }
   }
@@ -388,8 +412,13 @@ export default function GradesPage() {
     if (!assignmentId || !lapseId || !workspace) return;
     const currentEditing = assessmentForm.id ? (workspace.assessments || []).find((a: any) => a.id === assessmentForm.id) : null;
     const repairingPendingObjective = !!assessmentForm.id && (currentEditing?.objective === null || currentEditing?.objective === undefined);
-    const legacyRepairAllowed = repairingPendingObjective && (canGrade || (isAdmin && !selectedYear?.academicClosedAt));
-    if (!canGrade && !legacyRepairAllowed) { setErr('El lapso está inactivo. El Administrador debe activarlo para modificar evaluaciones.'); return; }
+    const editingExisting = !!assessmentForm.id;
+    if (editingExisting ? !canEditAssessment : !canGrade) {
+      setErr(editingExisting
+        ? 'No tiene permiso para modificar esta evaluación. El ADMINISTRADOR puede corregirla mientras el año académico permanezca abierto; el DOCENTE necesita el lapso activo.'
+        : 'El lapso está inactivo. El Administrador debe activarlo para crear evaluaciones.');
+      return;
+    }
 
     const objectiveText = String(assessmentForm.objective || '').trim().replace(',', '.');
     if (!/^\d+(?:\.\d+)?$/.test(objectiveText) || Number(objectiveText) <= 0) {
@@ -399,20 +428,51 @@ export default function GradesPage() {
     const repeated = (workspace.assessments || []).some((a: any) => a.id !== assessmentForm.id && Number(a.objective) === Number(objectiveText));
     if (repeated) { setErr(`El objetivo ${objectiveText} ya fue utilizado en otra evaluación de esta materia.`); return; }
 
+    // Las evaluaciones heredadas pueden tener fechas, técnicas o instrumentos que hoy ya no cumplen
+    // las reglas nuevas. Al regularizar un OBJETIVO PENDIENTE se guarda exclusivamente ese dato;
+    // no debemos bloquearlo por validaciones introducidas después de que la evaluación fue creada.
+    if (repairingPendingObjective) {
+      try {
+        setLoading(true);
+        await api(`/grading/assessments/${assessmentForm.id}/objective`, {
+          method: 'PATCH',
+          body: JSON.stringify({ objective: Number(objectiveText) }),
+          successMessage: `Objetivo ${objectiveText} guardado correctamente.`,
+        });
+        setAssessmentForm(emptyAssessmentForm(workspace.calculationMode === 'PERCENTUAL'));
+        await loadWorkspace();
+        setMsg(`Objetivo ${objectiveText} guardado correctamente.`);
+        setCloseErr('');
+        setErr('');
+      } catch (e: any) {
+        setErr(e.message);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     const technique = assessmentForm.technique === 'OTRA' ? assessmentForm.techniqueOther.trim().toUpperCase() : assessmentForm.technique;
     const instrument = assessmentForm.instrument === 'OTRO' ? assessmentForm.instrumentOther.trim().toUpperCase() : assessmentForm.instrument;
     if (!technique) { setErr('Seleccione una técnica. Si elige OTRA, debe describirla.'); return; }
     if (!instrument) { setErr('Seleccione un instrumento. Si elige OTRO, debe describirlo.'); return; }
 
-    const dateValidation = isAssessmentDateValid(assessmentForm.scheduledAt);
-    if (!dateValidation.ok) { setErr(dateValidation.message); return; }
-    const currentOrder = assessmentForm.id
-      ? Number((workspace.assessments || []).find((a: any) => a.id === assessmentForm.id)?.orderNumber || 0)
-      : (workspace.assessments?.length || 0) + 1;
-    const previous = (workspace.assessments || []).filter((a: any) => Number(a.orderNumber) < currentOrder).sort((a: any,b: any)=>Number(b.orderNumber)-Number(a.orderNumber))[0];
-    const next = (workspace.assessments || []).filter((a: any) => Number(a.orderNumber) > currentOrder).sort((a: any,b: any)=>Number(a.orderNumber)-Number(b.orderNumber))[0];
-    if (previous?.scheduledAt && assessmentForm.scheduledAt <= isoLocal(previous.scheduledAt)) { setErr(`La evaluación ${currentOrder} debe tener una fecha y hora posterior a la evaluación ${previous.orderNumber}.`); return; }
-    if (next?.scheduledAt && assessmentForm.scheduledAt >= isoLocal(next.scheduledAt)) { setErr(`La evaluación ${currentOrder} debe tener una fecha y hora anterior a la evaluación ${next.orderNumber}.`); return; }
+    const originalScheduledAt = currentEditing?.scheduledAt ? isoLocal(currentEditing.scheduledAt) : '';
+    const scheduledAtChanged = !assessmentForm.id || assessmentForm.scheduledAt !== originalScheduledAt;
+    // Una evaluación heredada puede tener una fecha/hora que hoy ya no cumple las reglas.
+    // Si el usuario NO cambia la fecha, permitimos corregir objetivo, contenido, técnica o instrumento
+    // sin obligarlo a alterar el histórico. Si cambia la fecha, sí aplicamos todas las reglas vigentes.
+    if (scheduledAtChanged) {
+      const dateValidation = isAssessmentDateValid(assessmentForm.scheduledAt);
+      if (!dateValidation.ok) { setErr(dateValidation.message); return; }
+      const currentOrder = assessmentForm.id
+        ? Number((workspace.assessments || []).find((a: any) => a.id === assessmentForm.id)?.orderNumber || 0)
+        : (workspace.assessments?.length || 0) + 1;
+      const previous = (workspace.assessments || []).filter((a: any) => Number(a.orderNumber) < currentOrder).sort((a: any,b: any)=>Number(b.orderNumber)-Number(a.orderNumber))[0];
+      const next = (workspace.assessments || []).filter((a: any) => Number(a.orderNumber) > currentOrder).sort((a: any,b: any)=>Number(a.orderNumber)-Number(b.orderNumber))[0];
+      if (previous?.scheduledAt && assessmentForm.scheduledAt <= isoLocal(previous.scheduledAt)) { setErr(`La evaluación ${currentOrder} debe tener una fecha y hora posterior a la evaluación ${previous.orderNumber}.`); return; }
+      if (next?.scheduledAt && assessmentForm.scheduledAt >= isoLocal(next.scheduledAt)) { setErr(`La evaluación ${currentOrder} debe tener una fecha y hora anterior a la evaluación ${next.orderNumber}.`); return; }
+    }
 
     try {
       setLoading(true);
@@ -424,10 +484,8 @@ export default function GradesPage() {
         scheduledAt: assessmentForm.scheduledAt,
         weight: workspace.calculationMode === 'PERCENTUAL' ? Number(assessmentForm.weight) : 1,
       };
-      if (repairingPendingObjective) {
-        await api(`/grading/assessments/${assessmentForm.id}/objective`, { method: 'PATCH', body: JSON.stringify({ objective: Number(objectiveText) }) });
-      } else if (assessmentForm.id) {
-        await api(`/grading/assessments/${assessmentForm.id}`, { method: 'PATCH', body: JSON.stringify(body) });
+      if (assessmentForm.id) {
+        await api(`/grading/assessments/${assessmentForm.id}`, { method: 'PATCH', body: JSON.stringify(body), successMessage: 'Evaluación actualizada correctamente.' });
       } else {
         await api(`/grading/assignments/${assignmentId}/lapses/${lapseId}/assessments`, { method: 'POST', body: JSON.stringify(body) });
       }
@@ -606,7 +664,7 @@ export default function GradesPage() {
     </form>}
 
     {workspace && <>
-      {!lapseIsOpen && <div className="warning-banner"><Lock/> <div><strong>LAPSO INACTIVO</strong><span>La información puede consultarse, pero no se pueden crear evaluaciones, guardar notas ni calcular definitivas hasta que ADMINISTRADOR active este lapso.</span></div></div>}
+      {!lapseIsOpen && <div className="warning-banner"><Lock/> <div><strong>LAPSO INACTIVO</strong><span>No se pueden crear evaluaciones, guardar notas ni calcular definitivas hasta que ADMINISTRADOR active este lapso. El ADMINISTRADOR sí puede corregir los datos de evaluaciones ya existentes mientras el año académico permanezca abierto.</span></div></div>}
 
       <section className="card form-section">
         <div className="section-head"><div><h3>Método de cálculo de la definitiva del lapso</h3><p>Se configura por materia y por lapso. El docente responsable puede elegir el método mientras el lapso esté activo.</p></div><Calculator/></div>
@@ -623,19 +681,19 @@ export default function GradesPage() {
         <div className="section-head"><div><h3>{objectiveRepairMode?'Completar objetivo pendiente':assessmentForm.id?'Editar evaluación':'Nueva evaluación'}</h3><p>{objectiveRepairMode?'Esta evaluación fue creada antes de incorporar el campo Objetivo. Registre únicamente el objetivo faltante para habilitar el cálculo del lapso.':'Objetivo, contenido, técnica, instrumento y fecha/hora son obligatorios. Solo se permiten días hábiles entre 07:00 a. m. y 06:00 p. m., respetando el orden cronológico. '}{!objectiveRepairMode&&(workspace.calculationMode==='PERCENTUAL'?'Indique el porcentaje asignado.':'El sistema aplicará promedio simple acumulativo.')}</p></div>{assessmentForm.id?<Edit3/>:<Plus/>}</div>
         {objectiveRepairMode&&<div className="info-banner legacy-objective-banner"><div><strong>REGULARIZACIÓN DE EVALUACIÓN ANTERIOR</strong><span>Solo se guardará el objetivo. Los demás datos permanecen protegidos. Si el lapso está inactivo, el ADMINISTRADOR puede completar este dato sin reabrir la carga de notas.</span></div></div>}
         <div className="form-grid cols-3">
-          <div><label>Objetivo *</label><input id="assessment-objective" className="input" inputMode="decimal" placeholder="EJ.: 1.1" value={assessmentForm.objective} onChange={e=>setAssessmentForm({...assessmentForm,objective:e.target.value.replace(',', '.')})} required disabled={objectiveRepairMode?!canRepairPendingObjective:!canGrade}/><small className="muted">Numérico o decimal. No puede repetirse en esta materia durante el año escolar.</small></div>
-          <div><label>Contenido evaluado *</label><input className="input uppercase" value={assessmentForm.title} onChange={e=>setAssessmentForm({...assessmentForm,title:e.target.value.toUpperCase()})} required disabled={!canGrade||objectiveRepairMode}/></div>
-          <div><label>Técnica *</label><select className="input" value={assessmentForm.technique} onChange={e=>setAssessmentForm({...assessmentForm,technique:e.target.value,techniqueOther:e.target.value==='OTRA'?assessmentForm.techniqueOther:''})} required disabled={!canGrade||objectiveRepairMode}><option value="">SELECCIONE</option>{TECHNIQUES.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
-          {assessmentForm.technique==='OTRA'&&<div><label>Indique otra técnica *</label><input className="input uppercase" value={assessmentForm.techniqueOther} onChange={e=>setAssessmentForm({...assessmentForm,techniqueOther:e.target.value.toUpperCase()})} required disabled={!canGrade||objectiveRepairMode}/></div>}
-          <div><label>Instrumento *</label><select className="input" value={assessmentForm.instrument} onChange={e=>setAssessmentForm({...assessmentForm,instrument:e.target.value,instrumentOther:e.target.value==='OTRO'?assessmentForm.instrumentOther:''})} required disabled={!canGrade||objectiveRepairMode}><option value="">SELECCIONE</option>{INSTRUMENTS.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
-          {assessmentForm.instrument==='OTRO'&&<div><label>Indique otro instrumento *</label><input className="input uppercase" value={assessmentForm.instrumentOther} onChange={e=>setAssessmentForm({...assessmentForm,instrumentOther:e.target.value.toUpperCase()})} required disabled={!canGrade||objectiveRepairMode}/></div>}
-          <div><label>Fecha y hora *</label><input className="input" type="datetime-local" value={assessmentForm.scheduledAt} onChange={e=>setAssessmentForm({...assessmentForm,scheduledAt:e.target.value})} required disabled={!canGrade||objectiveRepairMode}/><small className="muted">Lunes a viernes · 07:00 a. m. a 06:00 p. m.</small></div>
-          {workspace.calculationMode==='PERCENTUAL'&&<div><label>Ponderación (%) *</label><input className="input" type="number" min="0.01" max="100" step="0.01" value={assessmentForm.weight} onChange={e=>setAssessmentForm({...assessmentForm,weight:e.target.value})} required disabled={!canGrade||objectiveRepairMode}/></div>}
-        </div><div className="row-actions"><button className="btn" disabled={loading||(objectiveRepairMode?!canRepairPendingObjective:!canGrade)}>{objectiveRepairMode?<><Save size={16}/> Guardar objetivo pendiente</>:assessmentForm.id?<><Save size={16}/> Guardar cambios</>:<><Plus size={16}/> Agregar evaluación</>}</button>{assessmentForm.id&&<button type="button" className="btn secondary" onClick={()=>setAssessmentForm(emptyAssessmentForm(workspace.calculationMode==='PERCENTUAL'))}>Cancelar edición</button>}</div>
+          <div><label>Objetivo *</label><input id="assessment-objective" className={`input ${objectiveDuplicate?'input-invalid':''}`} inputMode="decimal" placeholder="EJ.: 1.1" value={assessmentForm.objective} onChange={e=>setAssessmentForm({...assessmentForm,objective:e.target.value.replace(',', '.')})} required disabled={objectiveRepairMode?!canRepairPendingObjective:(assessmentForm.id?!canEditAssessment:!canGrade)}/>{objectiveDuplicate?<small className="field-error">Este objetivo ya está registrado en otra evaluación de esta materia. Debe utilizar un objetivo diferente.</small>:<small className="muted">Numérico o decimal. No puede repetirse en esta materia durante el año escolar.</small>}</div>
+          <div><label>Contenido evaluado *</label><input className="input uppercase" value={assessmentForm.title} onChange={e=>setAssessmentForm({...assessmentForm,title:e.target.value.toUpperCase()})} required disabled={(assessmentForm.id?!canEditAssessment:!canGrade)||objectiveRepairMode}/></div>
+          <div><label>Técnica *</label><select className="input" value={assessmentForm.technique} onChange={e=>setAssessmentForm({...assessmentForm,technique:e.target.value,techniqueOther:e.target.value==='OTRA'?assessmentForm.techniqueOther:''})} required disabled={(assessmentForm.id?!canEditAssessment:!canGrade)||objectiveRepairMode}><option value="">SELECCIONE</option>{TECHNIQUES.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
+          {assessmentForm.technique==='OTRA'&&<div><label>Indique otra técnica *</label><input className="input uppercase" value={assessmentForm.techniqueOther} onChange={e=>setAssessmentForm({...assessmentForm,techniqueOther:e.target.value.toUpperCase()})} required disabled={(assessmentForm.id?!canEditAssessment:!canGrade)||objectiveRepairMode}/></div>}
+          <div><label>Instrumento *</label><select className="input" value={assessmentForm.instrument} onChange={e=>setAssessmentForm({...assessmentForm,instrument:e.target.value,instrumentOther:e.target.value==='OTRO'?assessmentForm.instrumentOther:''})} required disabled={(assessmentForm.id?!canEditAssessment:!canGrade)||objectiveRepairMode}><option value="">SELECCIONE</option>{INSTRUMENTS.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
+          {assessmentForm.instrument==='OTRO'&&<div><label>Indique otro instrumento *</label><input className="input uppercase" value={assessmentForm.instrumentOther} onChange={e=>setAssessmentForm({...assessmentForm,instrumentOther:e.target.value.toUpperCase()})} required disabled={(assessmentForm.id?!canEditAssessment:!canGrade)||objectiveRepairMode}/></div>}
+          <div><label>Fecha y hora *</label><input className="input" type="datetime-local" value={assessmentForm.scheduledAt} onChange={e=>setAssessmentForm({...assessmentForm,scheduledAt:e.target.value})} required disabled={(assessmentForm.id?!canEditAssessment:!canGrade)||objectiveRepairMode}/><small className="muted">Lunes a viernes · 07:00 a. m. a 06:00 p. m.</small></div>
+          {workspace.calculationMode==='PERCENTUAL'&&<div><label>Ponderación (%) *</label><input className="input" type="number" min="0.01" max="100" step="0.01" value={assessmentForm.weight} onChange={e=>setAssessmentForm({...assessmentForm,weight:e.target.value})} required disabled={(assessmentForm.id?!canEditAssessment:!canGrade)||objectiveRepairMode}/></div>}
+        </div><div className="row-actions"><button className="btn" disabled={loading||objectiveDuplicate||(objectiveRepairMode?!canRepairPendingObjective:(assessmentForm.id?!canEditAssessment:!canGrade))}>{objectiveRepairMode?<><Save size={16}/> Guardar objetivo pendiente</>:assessmentForm.id?<><Save size={16}/> Guardar cambios</>:<><Plus size={16}/> Agregar evaluación</>}</button>{assessmentForm.id&&<button type="button" className="btn secondary" onClick={()=>setAssessmentForm(emptyAssessmentForm(workspace.calculationMode==='PERCENTUAL'))}>Cancelar edición</button>}</div>
       </form>}
 
       <div className="stack notes-assessment-stack">{workspace.assessments.length===0?<div className="card empty-state"><ClipboardCheck size={30}/><strong>No hay evaluaciones configuradas</strong><span>Cree entre {workspace.policy.evaluationsMin} y {workspace.policy.evaluationsMax} para comenzar la transcripción.</span></div>:workspace.assessments.map((assessment:any)=><div className="card assessment-card" key={assessment.id}>
-        <div className="assessment-head"><div><div className="eyebrow">EVALUACIÓN {assessment.orderNumber} · OBJETIVO {assessment.objective??'PENDIENTE'}</div><h3>{assessment.title}</h3><p>{assessment.technique} · {assessment.instrument} · {String(assessment.scheduledAt).slice(0,16).replace('T',' ')}{workspace.calculationMode==='PERCENTUAL'?` · Ponderación ${Number(assessment.weight)}%`:' · ACUMULATIVA'}</p></div>{canTranscribe&&<div className="row-actions"><button className={`btn secondary mini-btn ${assessment.objective===null||assessment.objective===undefined?'repair-objective-btn':''}`} disabled={!(canGrade||(isAdmin&&(assessment.objective===null||assessment.objective===undefined)&&!selectedYear?.academicClosedAt))} title={!canGrade&&assessment.objective!==null&&assessment.objective!==undefined?'El Administrador debe activar el lapso para editar esta evaluación.':!canGrade&&!isAdmin&&assessment.objective===null?'Solicite al Administrador activar el lapso para completar el objetivo.':''} onClick={()=>{const tc=assessmentChoice(assessment.technique,TECHNIQUES,'OTRA');const ic=assessmentChoice(assessment.instrument,INSTRUMENTS,'OTRO');setAssessmentForm({id:assessment.id,title:assessment.title,objective:assessment.objective===null||assessment.objective===undefined?'':String(assessment.objective),technique:tc.choice,techniqueOther:tc.other,instrument:ic.choice,instrumentOther:ic.other,scheduledAt:isoLocal(assessment.scheduledAt),weight:workspace.calculationMode==='PERCENTUAL'?String(assessment.weight):'1'});setTimeout(()=>document.getElementById('assessment-editor')?.scrollIntoView({behavior:'smooth',block:'start'}),40);}}><Edit3 size={14}/> {assessment.objective===null||assessment.objective===undefined?'Completar objetivo':'Editar'}</button><button className="btn secondary mini-btn" disabled={!canGrade} onClick={()=>deleteAssessment(assessment.id)}><Trash2 size={14}/> Eliminar</button></div>}</div>
+        <div className="assessment-head"><div><div className="eyebrow">EVALUACIÓN {assessment.orderNumber} · OBJETIVO {assessment.objective??'PENDIENTE'}</div><h3>{assessment.title}</h3><p>{assessment.technique} · {assessment.instrument} · {String(assessment.scheduledAt).slice(0,16).replace('T',' ')}{workspace.calculationMode==='PERCENTUAL'?` · Ponderación ${Number(assessment.weight)}%`:' · ACUMULATIVA'}</p></div>{canTranscribe&&<div className="row-actions"><button className={`btn secondary mini-btn ${assessment.objective===null||assessment.objective===undefined?'repair-objective-btn':''}`} disabled={!canEditAssessment} title={!canEditAssessment&&!isAdmin?'El docente solo puede modificar evaluaciones cuando el lapso está activo.':!canEditAssessment&&isAdmin?'El año académico está cerrado y la evaluación está protegida.':''} onClick={()=>{const tc=assessmentChoice(assessment.technique,TECHNIQUES,'OTRA');const ic=assessmentChoice(assessment.instrument,INSTRUMENTS,'OTRO');setAssessmentForm({id:assessment.id,title:assessment.title,objective:assessment.objective===null||assessment.objective===undefined?'':String(assessment.objective),technique:tc.choice,techniqueOther:tc.other,instrument:ic.choice,instrumentOther:ic.other,scheduledAt:isoLocal(assessment.scheduledAt),weight:workspace.calculationMode==='PERCENTUAL'?String(assessment.weight):'1'});setTimeout(()=>document.getElementById('assessment-editor')?.scrollIntoView({behavior:'smooth',block:'start'}),40);}}><Edit3 size={14}/> {assessment.objective===null||assessment.objective===undefined?'Completar objetivo':'Editar'}</button><button className="btn secondary mini-btn" disabled={!canGrade} onClick={()=>deleteAssessment(assessment.id)}><Trash2 size={14}/> Eliminar</button></div>}</div>
         <div className="table-wrap grade-table-wrap"><table className="grade-table"><thead><tr><th>N°</th><th>Estudiante</th><th>1F asistencia</th><th>1F nota</th><th>Estado 1F</th><th>2F asistencia</th><th>2F nota</th><th>Estado 2F</th></tr></thead><tbody>{workspace.students.map((student:any)=>{
           const firstSaved=assessment.attempts?.find((x:any)=>x.enrollmentId===student.id&&x.form==='PRIMERA');
           const secondSaved=assessment.attempts?.find((x:any)=>x.enrollmentId===student.id&&x.form==='SEGUNDA');
