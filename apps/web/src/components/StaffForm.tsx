@@ -3,6 +3,7 @@ import {FormEvent,useState} from 'react';
 import {useRouter} from 'next/navigation';
 import {api} from '@/lib/api';
 import {DIGITS_PATTERN,NAME_PATTERN,digitsOnlyInput,nameOnlyInput,toUpperInput} from '@/lib/formRules';
+import {VENEZUELA_BANKS,bankOptionLabel,hasCatalogBankName} from '@/lib/venezuelaBanks';
 
 type Props={mode:'create'|'edit';staff?:any};
 const UPPER=new Set([
@@ -101,9 +102,9 @@ export default function StaffForm({mode,staff}:Props){
       <div><label>Talla de pantalón</label><select className="input" name="pantSize" defaultValue={d.pantSize||''}>{GARMENTS.map(x=><option key={x||'none'} value={x}>{x||'SELECCIONE'}</option>)}</select></div>
       <div><label>Talla de camisa</label><select className="input" name="shirtSize" defaultValue={d.shirtSize||''}>{GARMENTS.map(x=><option key={x||'none'} value={x}>{x||'SELECCIONE'}</option>)}</select></div>
       <div><label>Talla de zapatos</label><input className="input" type="number" name="shoeSize" min="20" max="50" defaultValue={d.shoeSize||''}/></div>
-      <div><label>Banco</label><input className="input uppercase" name="bankName" defaultValue={d.bankName||''} onInput={toUpperInput}/></div>
+      <div><label>Banco</label><select className="input" name="bankName" defaultValue={d.bankName||''}><option value="">SELECCIONE EL BANCO</option>{d.bankName&&!hasCatalogBankName(d.bankName)&&<option value={d.bankName}>{String(d.bankName).toLocaleUpperCase('es-VE')} · REGISTRADO</option>}{VENEZUELA_BANKS.map(bank=><option key={bank.code} value={bank.name}>{bankOptionLabel(bank)}</option>)}</select></div>
       <div><label>Tipo de cuenta</label><select className="input" name="accountType" defaultValue={d.accountType||''}><option value="">NO INDICADO</option><option value="CORRIENTE">CORRIENTE</option><option value="AHORRO">AHORRO</option><option value="OTRA">OTRA</option></select></div>
-      <div><label>Número de cuenta</label><input className="input" name="accountNumber" defaultValue={d.accountNumber||''} inputMode="numeric" pattern="\\d{20}" minLength={20} maxLength={20} title="Debe contener exactamente 20 dígitos numéricos" onInput={digitsOnlyInput}/><small className="field-help">20 dígitos numéricos.</small></div>
+      <div><label>Número de cuenta</label><input className="input" name="accountNumber" defaultValue={d.accountNumber||''} inputMode="numeric" pattern="[0-9]{20}" minLength={20} maxLength={20} title="Debe contener exactamente 20 dígitos numéricos" onInput={digitsOnlyInput}/><small className="field-help">20 dígitos numéricos.</small></div>
     </div></section>
     <div className="info-banner">Los hijos y su información educativa/salud se gestionan desde la ficha del personal después de guardar este registro.</div>
     <div className="action-bar"><button type="button" className="btn secondary" onClick={()=>router.back()}>Cancelar</button><button className="btn" disabled={saving}>{saving?'Guardando…':mode==='create'?'Registrar personal':'Guardar cambios'}</button></div>

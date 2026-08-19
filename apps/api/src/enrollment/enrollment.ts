@@ -830,10 +830,10 @@ export class EnrollmentService{
 @Controller('enrollments')
 export class EnrollmentController{
   constructor(private s:EnrollmentService){}
-  @Get() list(@Query('academicYearId')year?:string,@Query('condition')condition?:StudentCondition,@Query('search')search?:string,@Query('sectionId')sectionId?:string){return this.s.list(year,condition,search,sectionId)}
-  @Get('re-enrollment/lookup') lookup(@Query('nationality')nationality:Nationality,@Query('identityNumber')identityNumber:string,@Query('targetAcademicYearId')targetAcademicYearId:string){return this.s.reEnrollmentLookup(nationality,identityNumber,targetAcademicYearId)}
-  @Get('roster/:sectionId') roster(@Param('sectionId')id:string){return this.s.roster(id)}
-  @Get(':id') get(@Param('id')id:string){return this.s.get(id)}
+  @Roles(Role.ADMIN,Role.DIRECTOR,Role.SECRETARIA) @Get() list(@Query('academicYearId')year?:string,@Query('condition')condition?:StudentCondition,@Query('search')search?:string,@Query('sectionId')sectionId?:string){return this.s.list(year,condition,search,sectionId)}
+  @Roles(Role.ADMIN,Role.DIRECTOR,Role.SECRETARIA) @Get('re-enrollment/lookup') lookup(@Query('nationality')nationality:Nationality,@Query('identityNumber')identityNumber:string,@Query('targetAcademicYearId')targetAcademicYearId:string){return this.s.reEnrollmentLookup(nationality,identityNumber,targetAcademicYearId)}
+  @Roles(Role.ADMIN,Role.DIRECTOR,Role.SECRETARIA) @Get('roster/:sectionId') roster(@Param('sectionId')id:string){return this.s.roster(id)}
+  @Roles(Role.ADMIN,Role.DIRECTOR,Role.SECRETARIA) @Get(':id') get(@Param('id')id:string){return this.s.get(id)}
   @Roles(Role.ADMIN,Role.DIRECTOR,Role.SECRETARIA) @Post() create(@Body()dto:EnrollDto){return this.s.enroll(dto)}
   @Roles(Role.ADMIN,Role.DIRECTOR,Role.SECRETARIA) @Post('re-enrollment') reEnroll(@Body()dto:ReEnrollDto){return this.s.reEnroll(dto)}
   @Roles(Role.ADMIN,Role.DIRECTOR,Role.SECRETARIA) @Post('roster/:sectionId/lock') lock(@Param('sectionId')id:string){return this.s.lockRoster(id)}

@@ -1,9 +1,10 @@
 'use client';
 import Link from 'next/link';
-import { useEffect,useState } from 'react';
+import { useEffect,useMemo,useState } from 'react';
 import { BRANDING } from '@/lib/branding';
 import { LayoutDashboard,Users,GraduationCap,ClipboardList,BookOpen,UserRoundCog,ChartNoAxesCombined,Building2,LogOut,SunMoon,Shapes,ContactRound } from 'lucide-react';
 import { usePathname,useRouter } from 'next/navigation';
+import { api } from '@/lib/api';
 
 const nav=[
   ['/dashboard','Panel',LayoutDashboard],
@@ -22,12 +23,22 @@ export default function Shell({children,title}:{children:React.ReactNode,title:s
   const router=useRouter();
   const pathname=usePathname();
   const [dark,setDark]=useState(false);
+  const [role,setRole]=useState('');
 
   useEffect(()=>{
     const d=localStorage.getItem('theme')==='dark';
     setDark(d);
     document.documentElement.dataset.theme=d?'dark':'light';
-  },[]);
+    api('/auth/me').then((me:any)=>{
+      setRole(me?.role||'');
+      if(me?.role==='DOCENTE' && !pathname.startsWith('/grades')) router.replace('/grades');
+    }).catch(()=>{});
+  },[pathname,router]);
+
+  const visibleNav=useMemo(()=>{
+    if(role==='DOCENTE') return nav.filter(([href])=>href==='/grades');
+    return nav;
+  },[role]);
 
   function theme(){
     const d=!dark;
@@ -48,7 +59,7 @@ export default function Shell({children,title}:{children:React.ReactNode,title:s
         <span className="brand-copy"><strong>{BRANDING.systemName}</strong><br/><small>{BRANDING.systemSubtitle}</small></span>
       </div>
       <nav className="nav">
-        {nav.map(([href,label,Icon])=>{
+        {visibleNav.map(([href,label,Icon])=>{
           const active=pathname===href || pathname.startsWith(`${href}/`);
           return <Link
             key={href}
@@ -75,5 +86,5 @@ export default function Shell({children,title}:{children:React.ReactNode,title:s
       </header>
       <main className="main">{children}</main>
     </section>
-  </div>
+  </div>;
 }

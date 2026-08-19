@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { DIGITS_PATTERN, NAME_PATTERN, digitsOnlyInput, nameOnlyInput, toUpperInput } from '@/lib/formRules';
 import { calculateAge, latestBirthDateForMinimumAge } from '@/lib/age';
+import { VENEZUELA_BANKS, bankOptionLabel, hasCatalogBankName } from '@/lib/venezuelaBanks';
 
 const BLOOD_TYPES = ['', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const UPPERCASE_FIELDS = new Set([
@@ -127,9 +128,9 @@ export default function RepresentativeForm({ mode, representative, studentId }: 
     </div></section>
 
     <section className="card form-section"><div className="section-head"><div><h2>Información bancaria</h2><p>Datos de cuenta declarados por el representante.</p></div><span className="step-pill">03</span></div><div className="form-grid cols-3">
-      <div><label>Banco</label><input className="input uppercase" name="bankName" defaultValue={d.bankName || ''} onInput={toUpperInput} /></div>
+      <div><label>Banco</label><select className="input" name="bankName" defaultValue={d.bankName || ''}><option value="">SELECCIONE EL BANCO</option>{d.bankName && !hasCatalogBankName(d.bankName) && <option value={d.bankName}>{String(d.bankName).toLocaleUpperCase('es-VE')} · REGISTRADO</option>}{VENEZUELA_BANKS.map((bank) => <option key={bank.code} value={bank.name}>{bankOptionLabel(bank)}</option>)}</select></div>
       <div><label>Tipo de cuenta</label><select className="input" name="accountType" defaultValue={d.accountType || ''}><option value="">NO INDICADO</option><option value="CORRIENTE">CORRIENTE</option><option value="AHORRO">AHORRO</option><option value="OTRA">OTRA</option></select></div>
-      <div><label>Número de cuenta</label><input className="input" name="accountNumber" defaultValue={d.accountNumber || ''} maxLength={24} {...digitsProps} /></div>
+      <div><label>Número de cuenta</label><input className="input" name="accountNumber" defaultValue={d.accountNumber || ''} inputMode="numeric" pattern="[0-9]{20}" minLength={20} maxLength={20} title="Debe contener exactamente 20 dígitos numéricos" onInput={digitsOnlyInput} /><small className="field-help">20 dígitos numéricos, sin espacios ni guiones.</small></div>
     </div></section>
 
     {studentId && mode === 'create' && <section className="card form-section"><div className="section-head"><div><h2>Relación con el estudiante</h2><p>Al guardar, el representante quedará vinculado automáticamente al estudiante.</p></div><span className="step-pill">04</span></div><div className="form-grid cols-3">

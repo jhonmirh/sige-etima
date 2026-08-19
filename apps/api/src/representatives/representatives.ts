@@ -34,6 +34,7 @@ import { ageOnDate } from '../common/age';
 const NAME_REGEX = /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]+$/u;
 const DIGITS_REGEX = /^\d+$/;
 const PHONE_REGEX = /^\d{10,15}$/;
+const BANK_ACCOUNT_REGEX = /^\d{20}$/;
 const BLOOD_TYPES = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const UPPERCASE_FIELDS = new Set([
   'firstName', 'middleName', 'lastName', 'secondLastName', 'profession', 'address', 'birthPlace',
@@ -60,7 +61,7 @@ export class RepresentativeDto {
   @IsOptional() @IsString() @Matches(PHONE_REGEX, { message: 'El teléfono de trabajo debe contener entre 10 y 15 dígitos' }) workPhone?: string;
   @IsOptional() @IsString() bankName?: string;
   @IsOptional() @IsEnum(AccountType) accountType?: AccountType;
-  @IsOptional() @IsString() @Matches(DIGITS_REGEX, { message: 'El número de cuenta debe contener únicamente números' }) accountNumber?: string;
+  @IsOptional() @IsString() @Matches(BANK_ACCOUNT_REGEX, { message: 'El número de cuenta bancaria debe contener exactamente 20 dígitos numéricos' }) accountNumber?: string;
   @IsOptional() @IsIn(BLOOD_TYPES) bloodType?: string;
 }
 

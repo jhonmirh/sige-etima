@@ -110,6 +110,11 @@ enum LapseStatus {
   OPEN
   CLOSED
 }
+
+enum GradingCalculationMode {
+  PERCENTUAL
+  ACUMULATIVA
+}
 enum AssessmentForm {
   PRIMERA
   SEGUNDA
@@ -709,6 +714,7 @@ model PedagogicalLapse {
   status LapseStatus @default(PLANNED)
   assessments Assessment[]
   lapseGrades LapseGrade[]
+  assignmentConfigs AssignmentLapseConfig[]
   @@unique([academicYearId, number])
 }
 
@@ -724,7 +730,19 @@ model TeacherAssignment {
   studyPlanSubject StudyPlanSubject @relation(fields:[studyPlanSubjectId], references:[id])
   assessments Assessment[]
   lapseGrades LapseGrade[]
+  lapseConfigs AssignmentLapseConfig[]
   @@unique([staffId, sectionId, studyPlanSubjectId])
+}
+
+model AssignmentLapseConfig {
+  id String @id @default(uuid())
+  teacherAssignmentId String
+  teacherAssignment TeacherAssignment @relation(fields:[teacherAssignmentId], references:[id], onDelete:Cascade)
+  lapseId String
+  lapse PedagogicalLapse @relation(fields:[lapseId], references:[id], onDelete:Cascade)
+  calculationMode GradingCalculationMode @default(ACUMULATIVA)
+  updatedAt DateTime @updatedAt
+  @@unique([teacherAssignmentId, lapseId])
 }
 
 model Assessment {
@@ -734,6 +752,7 @@ model Assessment {
   lapseId String
   lapse PedagogicalLapse @relation(fields:[lapseId], references:[id])
   title String
+  objective Decimal? @db.Decimal(8,3)
   orderNumber Int
   weight Decimal @default(1) @db.Decimal(8,4)
   technique String?

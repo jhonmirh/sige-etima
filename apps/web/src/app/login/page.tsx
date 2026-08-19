@@ -35,7 +35,7 @@ export default function Login() {
 
       const j = await r.json();
       localStorage.setItem('sige_access', j.accessToken);
-      router.push('/dashboard');
+      router.push(j.user?.role === 'DOCENTE' ? '/grades' : '/dashboard');
     } catch {
       setError('No fue posible conectar con el sistema. Intente nuevamente.');
       setSubmitting(false);

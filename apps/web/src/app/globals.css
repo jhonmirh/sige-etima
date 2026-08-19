@@ -279,3 +279,27 @@ html,body{max-width:100%;overflow-x:hidden}.content,.main,.card,.form-section{mi
 @media(prefers-reduced-motion:reduce){
   .login-submit-v224,.login-submit-v224::after{transition:none}.login-spinner-v224{animation-duration:1.4s}
 }
+
+
+/* V2.2.1 · Control de lapsos y notas */
+.lapse-control-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.lapse-control-item{border:1px solid var(--line);border-radius:14px;background:var(--bg);padding:14px;display:grid;gap:5px}
+.lapse-control-item>span:first-child{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:var(--navy2)}
+.lapse-control-item>strong{font-size:13px;line-height:1.4}
+.notes-selector-card .form-grid{align-items:end}
+@media(max-width:1100px){.lapse-control-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.lapse-control-grid{grid-template-columns:1fr}.notes-selector-card .form-grid{grid-template-columns:1fr}}
+
+
+/* V2.2.2.2 — retroalimentación inmediata de notas y efecto táctil global */
+.grade-score-field{display:grid;gap:6px;min-width:150px}.grade-score-field .input-invalid{border-color:#d92d20!important;background:color-mix(in srgb,var(--panel) 92%,#fee4e2)!important;box-shadow:0 0 0 3px #d92d2018!important}.score-error{display:flex;align-items:flex-start;gap:5px;color:#b42318;font-size:11px;font-weight:800;line-height:1.25;max-width:190px}.score-error svg{flex:0 0 auto;margin-top:1px}
+button,.btn{transition:transform .10s ease,box-shadow .14s ease,filter .14s ease,background-color .14s ease,border-color .14s ease;transform-origin:center;-webkit-tap-highlight-color:transparent}button:not(:disabled):active,.btn:not([aria-disabled="true"]):active{transform:translateY(2px) scale(.965);filter:brightness(1.12);box-shadow:0 2px 8px #00000030!important}button:not(:disabled):focus-visible,.btn:focus-visible{outline:3px solid color-mix(in srgb,var(--navy2) 38%,transparent);outline-offset:2px}button:disabled,.btn[aria-disabled="true"]{cursor:not-allowed;opacity:.62}
+@media(prefers-reduced-motion:reduce){button,.btn{transition:none!important}button:not(:disabled):active,.btn:not([aria-disabled="true"]):active{transform:none}}
+
+/* V2.2.2.3 — validación visible de notas y reparación de objetivos heredados */
+.score-form-alert{margin:14px 18px 0;align-items:flex-start}.score-form-alert>div{display:grid;gap:3px}.score-form-alert strong{font-size:12px;letter-spacing:.04em}.score-form-alert span{font-size:13px;line-height:1.4}
+.grade-score-field .input-invalid{animation:grade-invalid-pulse .22s ease-out 1}
+@keyframes grade-invalid-pulse{0%{transform:translateX(0)}30%{transform:translateX(-3px)}60%{transform:translateX(3px)}100%{transform:translateX(0)}}
+.repair-objective-btn{border-color:#d88a00!important;background:#fff8e6!important;color:#8a4b00!important}.repair-objective-btn:hover:not(:disabled){background:#fff0c2!important}
+.legacy-objective-banner{margin-bottom:16px;border-color:#e8b352;background:#fffaf0}.legacy-objective-banner strong{color:#7a4800}
+@media(max-width:600px){.score-form-alert{margin:12px 10px 0}}

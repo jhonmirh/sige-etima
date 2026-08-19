@@ -588,7 +588,9 @@ export class AcademicService {
 export class AcademicController {
   constructor(private s: AcademicService) {}
 
+  @Roles(Role.ADMIN, Role.DIRECTOR, Role.SECRETARIA)
   @Get('years') years() { return this.s.years(); }
+  @Roles(Role.ADMIN, Role.DIRECTOR, Role.SECRETARIA)
   @Get('plans') plans(@Query('all') all?: string) { return this.s.plans(all === 'true'); }
 
   @Roles(Role.ADMIN)
@@ -607,6 +609,7 @@ export class AcademicController {
   @Delete('plans/:id')
   deletePlan(@Param('id') id: string) { return this.s.deleteStudyPlan(id); }
 
+  @Roles(Role.ADMIN, Role.DIRECTOR, Role.SECRETARIA)
   @Get('plans/:id/curriculum')
   curriculum(@Param('id') id: string) { return this.s.planCurriculum(id); }
 
@@ -617,13 +620,16 @@ export class AcademicController {
   @Roles(Role.ADMIN)
   @Patch('plan-subjects/:id')
   updateSubject(@Param('id') id: string, @Body() d: UpdatePlanSubjectDto) { return this.s.updatePlanSubject(id, d); }
+  @Roles(Role.ADMIN, Role.DIRECTOR, Role.SECRETARIA)
   @Get('sections') sections(@Query('academicYearId') year?: string, @Query('studyPlanId') plan?: string, @Query('gradeLevel') grade?: string, @Query('mentionId') mentionId?: string) {
     return this.s.sections(year, plan, grade ? Number(grade) : undefined, mentionId);
   }
+  @Roles(Role.ADMIN, Role.DIRECTOR, Role.SECRETARIA)
   @Get('section-names') sectionNames(@Query('active') active?: string) {
     return this.s.sectionNames(active === undefined ? undefined : active === 'true');
   }
 
+  @Roles(Role.ADMIN, Role.DIRECTOR, Role.SECRETARIA)
   @Get('mentions') mentions(@Query('studyPlanId') studyPlanId?: string, @Query('active') active?: string) {
     return this.s.mentions(studyPlanId, active === undefined ? undefined : active === 'true');
   }
@@ -664,5 +670,6 @@ export class AcademicController {
   @Post('sections')
   section(@Body() d: SectionDto) { return this.s.createSection(d); }
 
+  @Roles(Role.ADMIN, Role.DIRECTOR, Role.SECRETARIA)
   @Get('geography') geo() { return this.s.geography(); }
 }
