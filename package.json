@@ -8,6 +8,7 @@
     "test": "npm run test -w @sige/api",
     "db:generate": "npm run prisma:generate -w @sige/api",
     "db:migrate": "npm run prisma:migrate -w @sige/api",
+    "db:migrate:deploy": "npm run prisma:migrate:deploy -w @sige/api",
     "db:seed": "npm run prisma:seed -w @sige/api"
   }
 }

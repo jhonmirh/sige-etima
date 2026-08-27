@@ -3,11 +3,20 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { PrismaService } from '../prisma.service'; import { CurrentUser, JwtAuthGuard, Roles, RolesGuard } from '../common/security'; import { automaticRosterLockDate } from '../common/school-calendar'; import type { Response } from 'express'; import ExcelJS from 'exceljs'; import PDFDocument from 'pdfkit'; import { Role, StudentCondition } from '@prisma/client';
 function age(d:Date,at=new Date()){let a=at.getFullYear()-d.getFullYear(); const m=at.getMonth()-d.getMonth(); if(m<0||(m===0&&at.getDate()<d.getDate()))a--; return a;}
-function publicBrandAsset(webPath?:string|null){
+export function publicBrandAsset(webPath?:string|null){
   if(!webPath)return null;
   const relative=webPath.replace(/^\/+/, '');
-  const full=path.resolve(process.cwd(),'../web/public',relative);
-  return fs.existsSync(full)?full:null;
+  const publicRoot=path.resolve(process.cwd(),'../web/public');
+  const full=path.resolve(publicRoot,relative);
+  if(!full.startsWith(`${publicRoot}${path.sep}`)||!fs.existsSync(full))return null;
+  try{
+    const realRoot=fs.realpathSync(publicRoot);
+    const realFile=fs.realpathSync(full);
+    if(!realFile.startsWith(`${realRoot}${path.sep}`)||!fs.statSync(realFile).isFile())return null;
+    return realFile;
+  }catch{
+    return null;
+  }
 }
 function officialHeader(doc:any,inst:any){
   const school=publicBrandAsset(inst.schoolLogoPath||'/brand/escudo.png');

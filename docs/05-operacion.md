@@ -11,10 +11,20 @@ Docker Desktop / Docker Engine + Compose.
 5. Entrar a `http://localhost:3000`.
 
 ## Base de datos
-El contenedor API ejecuta `prisma db push` y `prisma seed` al arrancar. Para un entorno controlado de producción, sustituir `db push` por migraciones versionadas:
+El contenedor API ejecuta migraciones versionadas con `prisma migrate deploy` y luego el seed idempotente. Ya no usa `prisma db push` durante el arranque.
+
+Para instalaciones existentes creadas por versiones anteriores, el arranque comprueba primero que la estructura real coincida exactamente con `schema.prisma`. Solo entonces registra la migración base como aplicada, sin reconstruir tablas ni borrar datos. Si detecta diferencias, el API se detiene y solicita revisión manual para proteger el volumen PostgreSQL.
+
+En desarrollo, las nuevas migraciones se crean con:
 
 ```bash
-npm run prisma:migrate -w @sige/api
+npm run db:migrate
+```
+
+En despliegues y CI se aplican únicamente las migraciones pendientes:
+
+```bash
+npm run db:migrate:deploy
 ```
 
 ## Backups PostgreSQL

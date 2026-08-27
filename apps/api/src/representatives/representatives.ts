@@ -23,6 +23,8 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
+  MaxLength,
   Matches,
   Min,
   ValidateIf,
@@ -68,7 +70,7 @@ export class RepresentativeDto {
 export class UpdateRepresentativeDto extends PartialType(RepresentativeDto) {}
 
 export class LinkRepresentativeDto {
-  @IsString() studentId!: string;
+  @IsUUID() studentId!: string;
   @IsEnum(RelationshipType) relationship!: RelationshipType;
   @IsBoolean() isPrimary!: boolean;
   @IsBoolean() livesWithStudent!: boolean;
@@ -79,10 +81,10 @@ export class LinkRepresentativeDto {
 }
 
 export class ContributionDto {
-  @IsString() academicYearId!: string;
-  @IsNumber() @Min(0) amount!: number;
-  @IsOptional() @IsString() reference?: string;
-  @IsOptional() @IsString() notes?: string;
+  @IsUUID() academicYearId!: string;
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0.01) amount!: number;
+  @IsOptional() @IsString() @MaxLength(120) reference?: string;
+  @IsOptional() @IsString() @MaxLength(500) notes?: string;
   @IsOptional() @IsDateString() paidAt?: string;
 }
 

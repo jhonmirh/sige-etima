@@ -42,7 +42,7 @@ function round2(value: number) {
   return Math.round(value * 100) / 100;
 }
 
-function parseOptionalAbsences(value: unknown) {
+export function parseOptionalAbsences(value: unknown) {
   if (value === undefined || value === null || String(value).trim() === '') return null;
   const text = String(value).trim();
   if (!/^[1-9]\d*$/.test(text)) {

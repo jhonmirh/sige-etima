@@ -58,7 +58,7 @@ Se agregaron o reforzaron:
 - campos ampliados de `EmergencyContact`;
 - metadatos de `StudentDocument`.
 
-El contenedor API ejecuta `prisma db push` al iniciar, por lo que el esquema se sincroniza automáticamente en el entorno local Docker.
+El contenedor API ejecuta migraciones versionadas al iniciar. Las bases heredadas de la etapa que usaba `prisma db push` se verifican antes de registrar la migración base, sin borrar ni reconstruir los datos existentes.
 
 ## Punto aún pendiente dentro de geografía
 El modelo, API y selects dependientes están listos, pero el seed actual solo incorpora las entidades federales. El catálogo completo oficial/validado de municipios y parroquias debe cargarse antes de declarar esta parte cerrada al 100 %.
