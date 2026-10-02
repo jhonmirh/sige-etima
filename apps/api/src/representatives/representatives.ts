@@ -29,6 +29,7 @@ import {
 } from 'class-validator';
 import { PrismaService } from '../prisma.service';
 import { JwtAuthGuard, Roles, RolesGuard } from '../common/security';
+import { ageOnDate } from '../common/age';
 
 const NAME_REGEX = /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]+$/u;
 const DIGITS_REGEX = /^\d+$/;
@@ -49,7 +50,7 @@ export class RepresentativeDto {
   @IsOptional() @IsString() profession?: string;
   @IsString() address!: string;
   @IsOptional() @IsString() birthPlace?: string;
-  @IsOptional() @IsDateString() birthDate?: string;
+  @IsDateString() birthDate!: string;
   @IsOptional() @IsEnum(Sex) sex?: Sex;
   @IsOptional() @IsEmail() email?: string;
   @IsString() @Matches(PHONE_REGEX, { message: 'El teléfono principal debe contener entre 10 y 15 dígitos' }) phone1!: string;
@@ -141,7 +142,14 @@ export class RepresentativesService {
     return data;
   }
 
+  private validateAdultAge(birthDate?: string) {
+    if (!birthDate) throw new BadRequestException('La fecha de nacimiento del representante es obligatoria');
+    const age = ageOnDate(birthDate);
+    if (age < 18) throw new BadRequestException('El representante debe tener al menos 18 años cumplidos');
+  }
+
   async create(d: RepresentativeDto) {
+    this.validateAdultAge(d.birthDate);
     try {
       return await this.db.representative.create({ data: this.normalize(d) as Prisma.RepresentativeUncheckedCreateInput });
     } catch (error: any) {
@@ -151,6 +159,7 @@ export class RepresentativesService {
   }
 
   async update(id: string, d: UpdateRepresentativeDto) {
+    if (d.birthDate !== undefined) this.validateAdultAge(d.birthDate);
     try {
       return await this.db.representative.update({ where: { id }, data: this.normalize(d) as Prisma.RepresentativeUncheckedUpdateInput });
     } catch (error: any) {

@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Link2, Search, UsersRound } from 'lucide-react';
+import { ArrowLeft, Link2, RefreshCw, Search, UsersRound } from 'lucide-react';
 import Shell from '@/components/Shell';
 import { api } from '@/lib/api';
 import { toUpperInput } from '@/lib/formRules';
@@ -25,10 +25,18 @@ export default function LinkStudentToRepresentative(){
   const [saving,setSaving]=useState(false);
   const [relationship,setRelationship]=useState('MADRE');
 
+  async function loadData(){
+    try{
+      const [r,s]:any[]=await Promise.all([api(`/representatives/${id}`),api('/students?active=true')]);
+      setRepresentative(r);setStudents(s);setError('');
+    }catch(e:any){setError(e.message)}
+  }
+
   useEffect(()=>{
-    Promise.all([api(`/representatives/${id}`),api('/students?active=true')])
-      .then(([r,s])=>{setRepresentative(r);setStudents(s)})
-      .catch((e:any)=>setError(e.message));
+    loadData();
+    const refresh=()=>loadData();
+    window.addEventListener('focus',refresh);
+    return()=>window.removeEventListener('focus',refresh);
   },[id]);
 
   const available=useMemo(()=>{
@@ -83,7 +91,7 @@ export default function LinkStudentToRepresentative(){
     <form onSubmit={submit} className="stack">
       <section className="card form-section">
         <div className="section-head"><div><h2>1. Buscar estudiante</h2><p>Busca por nombre, apellido, cédula o cédula escolar.</p></div></div>
-        <div className="search-box" style={{marginBottom:14}}><Search size={18}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar estudiante"/></div>
+        <div className="row-actions" style={{marginBottom:14}}><div className="search-box" style={{flex:1}}><Search size={18}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar estudiante"/></div><button type="button" className="btn secondary" onClick={loadData}><RefreshCw size={16}/> Actualizar lista</button></div>
         {available.length===0?<div className="empty-state"><UsersRound size={28}/><strong>No hay estudiantes disponibles</strong><span>Todos los estudiantes visibles ya pueden estar vinculados con este representante.</span></div>:
         <div className="table-wrap"><table><thead><tr><th></th><th>Identificación</th><th>Estudiante</th><th>Representante actual</th></tr></thead><tbody>{available.map((s:any)=>{const primary=s.representatives?.find((x:any)=>x.isPrimary)?.representative;return <tr key={s.id} onClick={()=>setSelected(s.id)} style={{cursor:'pointer'}}><td><input type="radio" name="studentChoice" checked={selected===s.id} onChange={()=>setSelected(s.id)}/></td><td><strong>{identityLabel(s)}</strong></td><td>{[s.firstName,s.middleName,s.lastName,s.secondLastName].filter(Boolean).join(' ')}</td><td>{primary?`${primary.firstName} ${primary.lastName}`:'SIN PRINCIPAL'}</td></tr>})}</tbody></table></div>}
       </section>

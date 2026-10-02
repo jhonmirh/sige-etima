@@ -6,11 +6,11 @@ import { ArrowLeft, CalendarPlus, Copy, Plus, Power, School } from 'lucide-react
 import Shell from '@/components/Shell';
 import { api } from '@/lib/api';
 import { nameOnlyInput, toUpperInput } from '@/lib/formRules';
-import { automaticCloseLabelFromStart, dateLabel, schoolDateKey, storedDateKey } from '@/lib/schoolCalendar';
+import { automaticCloseLabelFromStart, dateLabel, rosterLockDateKeyFromClose, rosterLockLabelFromClose, schoolDateKey } from '@/lib/schoolCalendar';
 
 function closeReached(section: any) {
   const close = section?.academicYear?.enrollmentCloseDate;
-  return !!close && schoolDateKey() >= storedDateKey(close);
+  return !!close && schoolDateKey() >= rosterLockDateKeyFromClose(close);
 }
 
 export default function EnrollmentConfiguration() {
@@ -239,7 +239,7 @@ export default function EnrollmentConfiguration() {
     </div>
     {msg && <div className="success-banner">{msg}</div>}
     {err && <div className="alert">{err}</div>}
-    <div className="info-banner" style={{marginBottom:16}}><div><strong>CIERRE DE MATRÍCULA AUTOMÁTICO</strong><span>Todos los años escolares cierran el 31 de octubre del año en que comienzan. No requiere activación ni modificación manual.</span></div></div>
+    <div className="info-banner" style={{marginBottom:16}}><div><strong>CIERRE DE MATRÍCULA AUTOMÁTICO</strong><span>El 31 de octubre es el último día de matrícula ordinaria y la nómina permanece provisional durante todo ese día. Desde el 1 de noviembre queda fija automáticamente, sin intervención manual.</span></div></div>
 
     <div className="details-grid">
       <form className="card form-section" onSubmit={createYear}>
@@ -308,7 +308,7 @@ export default function EnrollmentConfiguration() {
         <button className="btn" disabled={activeSectionNames.length===0 || !sectionMentionId}>Crear sección</button>
       </form>
 
-      <section className="card"><h3>Secciones configuradas</h3><p className="muted">Antes del 31 de octubre, el número es provisional y se determina por cédula. Desde el 31 de octubre inclusive la numeración queda fija automáticamente; toda matrícula posterior recibe el siguiente número al final.</p><div className="table-wrap"><table><thead><tr><th>Modalidad</th><th>Plan</th><th>Grado</th><th>Mención</th><th>Sección</th><th>Turno</th><th>Matrículas</th><th>Nómina</th></tr></thead><tbody>{sections.length === 0 ? <tr><td colSpan={8}>No hay secciones configuradas.</td></tr> : sections.map(s => <tr key={s.id}><td>{s.studyPlan.modality==='MEDIA_TECNICA'?'MEDIA TÉCNICA':'MEDIA GENERAL'}</td><td>{s.studyPlan.code}</td><td>{s.gradeLevel}°</td><td>{s.mentionName || 'SIN DEFINIR'}</td><td>{s.name}</td><td>{s.shift || '—'}</td><td>{s._count?.enrollments || 0}</td><td>{s.rosterLockedAt ? <span className="status ok">FIJA</span> : closeReached(s) ? <span className="status ok">FIJA AUTOMÁTICA</span> : <span className="status warn">PROVISIONAL HASTA {dateLabel(s.academicYear.enrollmentCloseDate)}</span>}</td></tr>)}</tbody></table></div></section>
+      <section className="card"><h3>Secciones configuradas</h3><p className="muted">Hasta el 31 de octubre inclusive, la numeración es provisional y se determina por cédula. Desde el 1 de noviembre queda fija automáticamente; los retiros posteriores conservan su posición y toda matrícula posterior recibe el siguiente número al final por fecha de registro.</p><div className="table-wrap"><table><thead><tr><th>Modalidad</th><th>Plan</th><th>Grado</th><th>Mención</th><th>Sección</th><th>Turno</th><th>Matrículas</th><th>Nómina</th></tr></thead><tbody>{sections.length === 0 ? <tr><td colSpan={8}>No hay secciones configuradas.</td></tr> : sections.map(s => <tr key={s.id}><td>{s.studyPlan.modality==='MEDIA_TECNICA'?'MEDIA TÉCNICA':'MEDIA GENERAL'}</td><td>{s.studyPlan.code}</td><td>{s.gradeLevel}°</td><td>{s.mentionName || 'SIN DEFINIR'}</td><td>{s.name}</td><td>{s.shift || '—'}</td><td>{s._count?.enrollments || 0}</td><td>{s.rosterLockedAt ? <span className="status ok">FIJA</span> : closeReached(s) ? <span className="status ok">FIJA AUTOMÁTICA DESDE {rosterLockLabelFromClose(s.academicYear.enrollmentCloseDate)}</span> : <span className="status warn">PROVISIONAL HASTA {dateLabel(s.academicYear.enrollmentCloseDate)} INCLUSIVE</span>}</td></tr>)}</tbody></table></div></section>
     </div>
   </Shell>;
 }

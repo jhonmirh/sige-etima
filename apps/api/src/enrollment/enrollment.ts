@@ -12,6 +12,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  IsArray,
   IsDateString,
   IsEmail,
   IsEnum,
@@ -24,6 +25,7 @@ import {
   Min,
 } from 'class-validator';
 import {
+  EnrollmentMovementType,
   EnrollmentSubjectOrigin,
   Nationality,
   PendingStatus,
@@ -34,12 +36,14 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { JwtAuthGuard, Roles, RolesGuard } from '../common/security';
-import { automaticEnrollmentCloseDate, parseSchoolCalendarDate } from '../common/school-calendar';
+import { automaticEnrollmentCloseDate, automaticRosterLockDate, parseSchoolCalendarDate } from '../common/school-calendar';
 import { deriveAcademicDecision } from './enrollment.rules';
+import { ageOnDate } from '../common/age';
 
 const PHONE_REGEX=/^\d{10,15}$/;
 const GARMENT_SIZES=['10','11','12','13','14','15','16','S','M','L','XL','2XL','3XL'];
 const ENTRY_LITERALS=['A','B','C','D'];
+const EXTERNAL_ENTRY_CONDITIONS: StudentCondition[]=[StudentCondition.REGULAR,StudentCondition.MATERIA_PENDIENTE,StudentCondition.REPITIENTE];
 const LAST_APPROVED_BY_PLAN:Record<string,string[]>={
   '31059':['6° GRADO','1° AÑO','2° AÑO','3° AÑO','4° AÑO'],
   '41049':['6° GRADO','1° AÑO','2° AÑO','3° AÑO','4° AÑO','5° AÑO'],
@@ -54,6 +58,8 @@ class EnrollDto{
   @IsOptional() @IsDateString() registrationDate?:string;
   @IsOptional() @IsString() lastApprovedYear?:string;
   @IsOptional() @IsIn(ENTRY_LITERALS) literal?:string;
+  @IsOptional() @IsIn(EXTERNAL_ENTRY_CONDITIONS) condition?:StudentCondition;
+  @IsOptional() @IsArray() @IsString({each:true}) failedSubjectIds?:string[];
   @IsOptional() @IsInt() @Min(50) @Max(250) heightCm?:number;
   @IsOptional() @IsInt() @Min(10000) @Max(300000) weightGrams?:number;
   @IsOptional() @IsIn(GARMENT_SIZES) shirtSize?:string;
@@ -82,11 +88,38 @@ class WithdrawDto{
   @IsString() destinationInstitution!:string;
 }
 
+class ReinstateDto{
+  @IsDateString() returnDate!:string;
+  @IsOptional() @IsString() address?:string;
+  @IsOptional() @IsString() @Matches(PHONE_REGEX,{message:'El teléfono debe contener entre 10 y 15 dígitos'}) phone?:string;
+  @IsOptional() @IsEmail() email?:string;
+}
+
 @Injectable()
 export class EnrollmentService{
   constructor(private db:PrismaService){}
 
   private normalizeUpper(value?:string|null){return value?.trim()?value.trim().replace(/\s+/g,' ').toLocaleUpperCase('es-VE'):undefined}
+
+  private readonly activeAcademicConditions:StudentCondition[]=[StudentCondition.REGULAR,StudentCondition.MATERIA_PENDIENTE,StudentCondition.REPITIENTE];
+
+  private isActiveAcademicCondition(value?:StudentCondition|null){
+    return !!value && this.activeAcademicConditions.includes(value);
+  }
+
+  private restorableCondition(enrollment:any):StudentCondition{
+    if(this.isActiveAcademicCondition(enrollment.academicCondition)) return enrollment.academicCondition;
+    const origins=(enrollment.curriculumSubjects||[]).map((x:any)=>x.origin);
+    if(origins.includes(EnrollmentSubjectOrigin.REPITENCIA)) return StudentCondition.REPITIENTE;
+    if(origins.includes(EnrollmentSubjectOrigin.MATERIA_PENDIENTE)) return StudentCondition.MATERIA_PENDIENTE;
+    return StudentCondition.REGULAR;
+  }
+
+  private previousAcademicYearName(name:string){
+    const m=name.match(/(\d{4})\D+(\d{4})/);
+    if(!m) return 'AÑO ESCOLAR ANTERIOR';
+    return `${Number(m[1])-1}-${Number(m[2])-1}`;
+  }
 
   private sortByIdentity(a:any,b:any){
     const ai=a.student?.identityNumber?Number(a.student.identityNumber):Number.MAX_SAFE_INTEGER;
@@ -98,8 +131,13 @@ export class EnrollmentService{
   }
 
   private async requireRepresentative(studentId:string){
-    const count=await this.db.studentRepresentative.count({where:{studentId,representative:{active:true}}});
-    if(!count) throw new BadRequestException('El estudiante debe tener al menos un representante activo vinculado antes de formalizar la matrícula');
+    const links=await this.db.studentRepresentative.findMany({
+      where:{studentId,representative:{active:true}},
+      include:{representative:true},
+    });
+    if(!links.length) throw new BadRequestException('El estudiante debe tener al menos un representante activo vinculado antes de formalizar la matrícula');
+    const adult=links.find((x:any)=>x.representative?.birthDate && ageOnDate(x.representative.birthDate)>=18);
+    if(!adult) throw new BadRequestException('Debe existir al menos un representante activo con fecha de nacimiento registrada y 18 años o más antes de formalizar la matrícula');
   }
 
   private async nextListNumber(sectionId:string){
@@ -107,13 +145,19 @@ export class EnrollmentService{
     return (max._max.listNumber||0)+1;
   }
 
-  private isOnOrAfterEnrollmentClose(year:any,date:Date){
-    const close=automaticEnrollmentCloseDate(year.startDate);
-    return date.getTime()>=close.getTime();
+  private isOnOrAfterRosterLock(year:any,date:Date){
+    const lock=automaticRosterLockDate(year.startDate);
+    return date.getTime()>=lock.getTime();
   }
 
   private isLateOrLocked(section:any,year:any,date:Date){
-    return !!section.rosterLockedAt || this.isOnOrAfterEnrollmentClose(year,date);
+    return !!section.rosterLockedAt || this.isOnOrAfterRosterLock(year,date);
+  }
+
+  private isExcludedByEarlyWithdrawal(row:any,year:any){
+    if(!row?.withdrawal?.withdrawalDate) return false;
+    const lock=automaticRosterLockDate(year.startDate);
+    return new Date(row.withdrawal.withdrawalDate).getTime()<lock.getTime();
   }
 
   private async expectedSubjects(previous:any){
@@ -205,10 +249,24 @@ export class EnrollmentService{
       },
     });
     if(!student) throw new BadRequestException('No se encontró un estudiante con esa nacionalidad y cédula');
-    const already=await this.db.enrollment.findUnique({where:{studentId_academicYearId:{studentId:student.id,academicYearId:targetAcademicYearId}},include:{academicYear:true,studyPlan:true,section:true}});
+    const already=await this.db.enrollment.findUnique({where:{studentId_academicYearId:{studentId:student.id,academicYearId:targetAcademicYearId}},include:{academicYear:true,studyPlan:true,section:true,withdrawal:true,curriculumSubjects:{where:{active:true}}}});
     const previous=await this.previousEnrollmentFor(student.id,targetYear);
+    const alreadyCondition=already?.condition as StudentCondition|undefined;
+    const alreadyActive=!!alreadyCondition && this.isActiveAcademicCondition(alreadyCondition);
+    const alreadyWithdrawn=alreadyCondition===StudentCondition.RETIRADO || alreadyCondition===StudentCondition.RETIRADO_MODIFICADO;
+    const reinstatement=alreadyWithdrawn && already ? {
+      allowed:true,
+      enrollmentId:already.id,
+      currentCondition:already.condition,
+      restoreCondition:this.restorableCondition(already),
+      withdrawal:already.withdrawal||null,
+      section:already.section,
+      studyPlan:already.studyPlan,
+      gradeLevel:already.gradeLevel,
+      listNumber:already.listNumber,
+    }:null;
     if(!previous){
-      return {student,targetAcademicYear:targetYear,alreadyEnrolled:already||null,previousEnrollment:null,recommendation:null,message:'El estudiante no posee una matrícula anterior que pueda generar reinscripción automática.'};
+      return {student,targetAcademicYear:targetYear,alreadyEnrolled:already||null,alreadyEnrollmentActive:alreadyActive,alreadyEnrollmentWithdrawn:alreadyWithdrawn,reinstatement,previousEnrollment:null,recommendation:null,message:alreadyWithdrawn?'El estudiante posee una matrícula retirada en el año destino y puede ser reincorporado.':'El estudiante no posee una matrícula anterior que pueda generar reinscripción automática.'};
     }
     const outcome=await this.buildOutcome(previous);
     const subjects=outcome.complete?await this.subjectsForNext(previous,outcome):[];
@@ -227,6 +285,9 @@ export class EnrollmentService{
       student,
       targetAcademicYear:targetYear,
       alreadyEnrolled:already||null,
+      alreadyEnrollmentActive:alreadyActive,
+      alreadyEnrollmentWithdrawn:alreadyWithdrawn,
+      reinstatement,
       previousEnrollment:previous,
       academicOutcome:{
         complete:outcome.complete,
@@ -260,17 +321,56 @@ export class EnrollmentService{
       this.db.studyPlan.findUniqueOrThrow({where:{id:d.studyPlanId}}),
     ]);
     if(!student.active) throw new BadRequestException('El estudiante está inactivo');
+    if(ageOnDate(student.birthDate)<10) throw new BadRequestException('El estudiante debe tener al menos 10 años cumplidos para formalizar la matrícula');
     if(section.academicYearId!==d.academicYearId || section.studyPlanId!==d.studyPlanId || section.gradeLevel!==d.gradeLevel) throw new BadRequestException('Sección incompatible con año, plan o grado');
+    if(!section.mentionId) throw new BadRequestException('La sección debe tener una mención académica configurada');
+    if(!d.registrationDate) throw new BadRequestException('La fecha de inscripción es obligatoria');
+    if(d.heightCm===undefined || d.weightGrams===undefined) throw new BadRequestException('La estatura y el peso son obligatorios para formalizar la primera matrícula');
     const normalizedLastApproved=this.normalizeUpper(d.lastApprovedYear);
+    if(!normalizedLastApproved) throw new BadRequestException('Debe indicar el último año aprobado');
+    if(d.gradeLevel===1 && !d.literal) throw new BadRequestException('El literal de ingreso es obligatorio para 1° AÑO');
     const allowedLastApproved=LAST_APPROVED_BY_PLAN[plan.code];
     if(normalizedLastApproved && allowedLastApproved && !allowedLastApproved.includes(normalizedLastApproved)) throw new BadRequestException(`Último año aprobado inválido para el plan ${plan.code}`);
     if(d.gradeLevel>1 && d.literal) throw new BadRequestException('El literal solo se permite en la inscripción de 1° año');
     const existing=await this.db.enrollment.findUnique({where:{studentId_academicYearId:{studentId:d.studentId,academicYearId:d.academicYearId}}});
     if(existing) throw new ConflictException('El estudiante ya posee matrícula en este año escolar');
-    const planSubjects=await this.db.studyPlanSubject.findMany({where:{studyPlanId:d.studyPlanId,gradeLevel:d.gradeLevel,active:true}});
+    const historicalCount=await this.db.enrollment.count({where:{studentId:d.studentId}});
+    if(historicalCount>0) throw new BadRequestException('El estudiante ya posee matrícula histórica en ETIMA. Para estudiantes de la institución debe utilizar Reinscripción; la condición académica será determinada automáticamente por las definitivas.');
+
+    if(!student.originSchool?.trim()) throw new BadRequestException('Debe indicar el Plantel de procedencia en la ficha del estudiante antes de formalizar la primera matrícula');
+
+    const condition=d.condition??StudentCondition.REGULAR;
+    if(!EXTERNAL_ENTRY_CONDITIONS.includes(condition)) throw new BadRequestException('Condición académica de ingreso inválida');
+    const failedSubjectIds=[...new Set((d.failedSubjectIds||[]).filter(Boolean))];
+    const policy=await this.db.gradingPolicy.findUnique({where:{academicYearId:d.academicYearId}});
+    const pendingMaxSubjects=policy?.pendingMaxSubjects??2;
+    const planSubjects=await this.db.studyPlanSubject.findMany({where:{studyPlanId:d.studyPlanId,gradeLevel:d.gradeLevel,active:true},include:{subject:true},orderBy:{sortOrder:'asc'}});
     if(!planSubjects.length) throw new BadRequestException('El plan seleccionado no tiene materias configuradas para este grado');
+
+    let curriculumRows:{studyPlanSubjectId:string;origin:EnrollmentSubjectOrigin}[]=[];
+    let manualFailedSubjects:any[]=[];
+    if(condition===StudentCondition.REGULAR){
+      if(failedSubjectIds.length) throw new BadRequestException('Un estudiante REGULAR no debe registrar materias reprobadas');
+      curriculumRows=planSubjects.map(s=>({studyPlanSubjectId:s.id,origin:EnrollmentSubjectOrigin.PLAN_ACTUAL}));
+    }else if(condition===StudentCondition.MATERIA_PENDIENTE){
+      if(d.gradeLevel<=1) throw new BadRequestException('La condición MATERIA PENDIENTE en primera matrícula requiere ingreso a 2° año o superior, porque las materias pendientes deben pertenecer al año inmediatamente anterior del plan de educación media');
+      if(failedSubjectIds.length<1 || failedSubjectIds.length>pendingMaxSubjects) throw new BadRequestException(`MATERIA PENDIENTE requiere entre 1 y ${pendingMaxSubjects} materia(s) reprobada(s)`);
+      if(!student.originSchool?.trim()) throw new BadRequestException('Para registrar MATERIA PENDIENTE de otro plantel debe indicar el Plantel de procedencia en la ficha del estudiante');
+      manualFailedSubjects=await this.db.studyPlanSubject.findMany({where:{id:{in:failedSubjectIds},studyPlanId:d.studyPlanId,gradeLevel:d.gradeLevel-1,active:true},include:{subject:true},orderBy:{sortOrder:'asc'}});
+      if(manualFailedSubjects.length!==failedSubjectIds.length) throw new BadRequestException(`Las materias pendientes deben corresponder al ${d.gradeLevel-1}° AÑO del mismo plan de estudio`);
+      curriculumRows=[
+        ...planSubjects.map(s=>({studyPlanSubjectId:s.id,origin:EnrollmentSubjectOrigin.PLAN_ACTUAL})),
+        ...manualFailedSubjects.map(s=>({studyPlanSubjectId:s.id,origin:EnrollmentSubjectOrigin.MATERIA_PENDIENTE})),
+      ];
+    }else{
+      if(failedSubjectIds.length<=pendingMaxSubjects) throw new BadRequestException(`REPITIENTE requiere más de ${pendingMaxSubjects} materias reprobadas`);
+      if(!student.originSchool?.trim()) throw new BadRequestException('Para registrar REPITIENTE proveniente de otro plantel debe indicar el Plantel de procedencia en la ficha del estudiante');
+      manualFailedSubjects=await this.db.studyPlanSubject.findMany({where:{id:{in:failedSubjectIds},studyPlanId:d.studyPlanId,gradeLevel:d.gradeLevel,active:true},include:{subject:true},orderBy:{sortOrder:'asc'}});
+      if(manualFailedSubjects.length!==failedSubjectIds.length) throw new BadRequestException(`Las materias de REPITENCIA deben corresponder al ${d.gradeLevel}° AÑO del mismo plan de estudio`);
+      curriculumRows=manualFailedSubjects.map(s=>({studyPlanSubjectId:s.id,origin:EnrollmentSubjectOrigin.REPITENCIA}));
+    }
     const date=parseSchoolCalendarDate(d.registrationDate);
-    if(!section.rosterLockedAt && this.isOnOrAfterEnrollmentClose(year,date)){
+    if(!section.rosterLockedAt && this.isOnOrAfterRosterLock(year,date)){
       await this.lockRoster(section.id,date);
       section.rosterLockedAt=new Date();
     }
@@ -279,9 +379,26 @@ export class EnrollmentService{
     return this.db.$transaction(async tx=>{
       const enrollment=await tx.enrollment.create({data:{
         studentId:d.studentId,academicYearId:d.academicYearId,studyPlanId:d.studyPlanId,sectionId:d.sectionId,gradeLevel:d.gradeLevel,
-        registrationDate:date,lastApprovedYear:normalizedLastApproved,literal:d.gradeLevel===1?this.normalizeUpper(d.literal):undefined,isLateEnrollment:late,listNumber,
+        registrationDate:date,lastApprovedYear:normalizedLastApproved,literal:d.gradeLevel===1?this.normalizeUpper(d.literal):undefined,isLateEnrollment:late,listNumber,condition,
+        notes:condition===StudentCondition.REGULAR?undefined:`CONDICIÓN DE INGRESO MANUAL DESDE OTRO PLANTEL: ${condition.replaceAll('_',' ')}${student.originSchool?` · PROCEDENCIA: ${this.normalizeUpper(student.originSchool)}`:''}`,
       }});
-      await tx.enrollmentSubject.createMany({data:planSubjects.map(s=>({enrollmentId:enrollment.id,studyPlanSubjectId:s.id,origin:EnrollmentSubjectOrigin.PLAN_ACTUAL}))});
+      await tx.enrollmentSubject.createMany({data:curriculumRows.map(s=>({enrollmentId:enrollment.id,studyPlanSubjectId:s.studyPlanSubjectId,origin:s.origin}))});
+      if(condition===StudentCondition.MATERIA_PENDIENTE){
+        const sourceAcademicYear=this.previousAcademicYearName(year.name);
+        for(const failed of manualFailedSubjects){
+          await tx.pendingSubject.create({data:{
+            enrollmentId:enrollment.id,
+            studyPlanSubjectId:failed.id,
+            sourceAcademicYear,
+            opportunities:{create:[
+              {sequence:1,label:'OCTUBRE'},
+              {sequence:2,label:'DICIEMBRE'},
+              {sequence:3,label:'FEBRERO'},
+              {sequence:4,label:'MARZO'},
+            ]},
+          }});
+        }
+      }
       if(d.heightCm!==undefined && d.weightGrams!==undefined){
         await tx.anthropometricRecord.create({data:{studentId:d.studentId,enrollmentId:enrollment.id,heightCm:d.heightCm,weightGrams:d.weightGrams,shirtSize:d.shirtSize,pantSize:d.pantSize,shoeSize:d.shoeSize}});
       }
@@ -311,7 +428,7 @@ export class EnrollmentService{
     const subjects=await this.subjectsForNext(previous,outcome);
     if(!subjects.length) throw new BadRequestException('No existen materias a cursar según la definitiva del año anterior');
     const date=parseSchoolCalendarDate(d.registrationDate);
-    if(!section.rosterLockedAt && this.isOnOrAfterEnrollmentClose(targetYear,date)){
+    if(!section.rosterLockedAt && this.isOnOrAfterRosterLock(targetYear,date)){
       await this.lockRoster(section.id,date);
       section.rosterLockedAt=new Date();
     }
@@ -378,12 +495,15 @@ export class EnrollmentService{
     const section=await this.db.section.findUniqueOrThrow({where:{id:sectionId},include:{academicYear:true}});
     if(section.rosterLockedAt) return this.roster(sectionId,false);
     const close=automaticEnrollmentCloseDate(section.academicYear.startDate);
-    if(effectiveDate.getTime()<close.getTime()){
-      throw new BadRequestException(`La nómina permanece provisional hasta la fecha de cierre de matrícula ${close.toLocaleDateString('es-VE')}`);
+    const lock=automaticRosterLockDate(section.academicYear.startDate);
+    if(effectiveDate.getTime()<lock.getTime()){
+      throw new BadRequestException(`La nómina permanece provisional durante todo el ${close.toLocaleDateString('es-VE')}. Se fija automáticamente desde el 01/11.`);
     }
-    const items=await this.db.enrollment.findMany({where:{sectionId},include:{student:true}});
-    const initial=items.filter((x:any)=>new Date(x.registrationDate).getTime()<close.getTime());
-    const postClose=items.filter((x:any)=>new Date(x.registrationDate).getTime()>=close.getTime());
+    const items=await this.db.enrollment.findMany({where:{sectionId},include:{student:true,withdrawal:true}});
+    // Los retiros efectivos hasta el 31/10 inclusive salen de la nómina antes de fijarla.
+    const eligible=items.filter((x:any)=>!this.isExcludedByEarlyWithdrawal(x,section.academicYear));
+    const initial=eligible.filter((x:any)=>new Date(x.registrationDate).getTime()<lock.getTime());
+    const postClose=eligible.filter((x:any)=>new Date(x.registrationDate).getTime()>=lock.getTime());
     initial.sort((a:any,b:any)=>this.sortByIdentity(a,b));
     postClose.sort((a:any,b:any)=>{
       const byDate=new Date(a.registrationDate).getTime()-new Date(b.registrationDate).getTime();
@@ -392,6 +512,7 @@ export class EnrollmentService{
     const ordered=[...initial,...postClose];
     await this.db.$transaction(async tx=>{
       // Limpiamos primero la numeración para evitar colisiones con el índice único de sección+número.
+      // Esto también deja sin número a cualquier retiro realizado hasta el 31/10 inclusive.
       await tx.enrollment.updateMany({where:{sectionId},data:{listNumber:null}});
       for(let i=0;i<ordered.length;i++) await tx.enrollment.update({where:{id:ordered[i].id},data:{listNumber:i+1}});
       await tx.section.update({where:{id:sectionId},data:{rosterLockedAt:new Date()}});
@@ -402,8 +523,8 @@ export class EnrollmentService{
   async ensureYearRostersLockedIfDue(yearId:string,effectiveDate:Date=new Date()){
     const year=await this.db.academicYear.findUnique({where:{id:yearId}});
     if(!year) return;
-    const close=automaticEnrollmentCloseDate(year.startDate);
-    if(effectiveDate.getTime()<close.getTime()) return;
+    const lock=automaticRosterLockDate(year.startDate);
+    if(effectiveDate.getTime()<lock.getTime()) return;
     const sections=await this.db.section.findMany({where:{academicYearId:yearId,rosterLockedAt:null},select:{id:true}});
     for(const section of sections) await this.lockRoster(section.id,effectiveDate);
   }
@@ -411,9 +532,10 @@ export class EnrollmentService{
   private async provisionalNumberMap(sectionIds:string[]){
     const result=new Map<string,number>();
     if(!sectionIds.length) return result;
-    const rows=await this.db.enrollment.findMany({where:{sectionId:{in:sectionIds}},include:{student:true}});
+    const rows=await this.db.enrollment.findMany({where:{sectionId:{in:sectionIds}},include:{student:true,withdrawal:true,section:{include:{academicYear:true}}}});
     const groups=new Map<string,any[]>();
     for(const row of rows){
+      if(this.isExcludedByEarlyWithdrawal(row,row.section.academicYear)) continue;
       const group=groups.get(row.sectionId)||[];
       group.push(row);
       groups.set(row.sectionId,group);
@@ -427,27 +549,111 @@ export class EnrollmentService{
 
   async roster(sectionId:string,autoLock=true){
     let section=await this.db.section.findUniqueOrThrow({where:{id:sectionId},include:{academicYear:true}});
-    if(autoLock && !section.rosterLockedAt && this.isOnOrAfterEnrollmentClose(section.academicYear,new Date())){
+    if(autoLock && !section.rosterLockedAt && this.isOnOrAfterRosterLock(section.academicYear,new Date())){
       await this.lockRoster(sectionId,new Date());
       section=await this.db.section.findUniqueOrThrow({where:{id:sectionId},include:{academicYear:true}});
     }
     const rows=await this.db.enrollment.findMany({where:{sectionId},include:{student:true,withdrawal:true,studyPlan:true,section:true,curriculumSubjects:{where:{active:true},include:{studyPlanSubject:{include:{subject:true}}}}}});
+    const rosterRows=rows.filter((row:any)=>!this.isExcludedByEarlyWithdrawal(row,section.academicYear));
     if(section.rosterLockedAt){
-      rows.sort((a:any,b:any)=>(a.listNumber??Number.MAX_SAFE_INTEGER)-(b.listNumber??Number.MAX_SAFE_INTEGER));
-      return rows.map((row:any)=>({...row,displayListNumber:row.listNumber,rosterStatus:'FIJA'}));
+      rosterRows.sort((a:any,b:any)=>(a.listNumber??Number.MAX_SAFE_INTEGER)-(b.listNumber??Number.MAX_SAFE_INTEGER));
+      return rosterRows.map((row:any)=>({...row,displayListNumber:row.listNumber,rosterStatus:'FIJA'}));
     }
-    rows.sort((a:any,b:any)=>this.sortByIdentity(a,b));
-    return rows.map((row:any,index:number)=>({...row,displayListNumber:index+1,rosterStatus:'PROVISIONAL'}));
+    rosterRows.sort((a:any,b:any)=>this.sortByIdentity(a,b));
+    return rosterRows.map((row:any,index:number)=>({...row,displayListNumber:index+1,rosterStatus:'PROVISIONAL'}));
   }
 
   async withdraw(id:string,d:WithdrawDto){
-    const e=await this.db.enrollment.findUniqueOrThrow({where:{id},include:{academicYear:true}}); const wd=new Date(d.withdrawalDate);
+    let e=await this.db.enrollment.findUniqueOrThrow({where:{id},include:{academicYear:true,section:true,curriculumSubjects:{where:{active:true}}}});
+    if(e.condition===StudentCondition.RETIRADO || e.condition===StudentCondition.RETIRADO_MODIFICADO) throw new BadRequestException('El estudiante ya se encuentra retirado en esta matrícula');
+    const wd=parseSchoolCalendarDate(d.withdrawalDate);
     const start=new Date(e.academicYear.startDate), end=new Date(e.academicYear.endDate);
     if(wd<start || wd>end) throw new BadRequestException('La fecha de retiro debe estar dentro del año escolar');
-    const threshold=new Date(start); threshold.setDate(threshold.getDate()+30);
-    const type=wd<=threshold?WithdrawalType.PRIMEROS_30_DIAS:WithdrawalType.RESTO_ANO;
-    const condition=type===WithdrawalType.PRIMEROS_30_DIAS?StudentCondition.RETIRADO:StudentCondition.RETIRADO_MODIFICADO;
-    return this.db.$transaction(async tx=>{await tx.enrollment.update({where:{id},data:{condition}});return tx.withdrawal.upsert({where:{enrollmentId:id},update:{...d,withdrawalDate:wd,type,destinationInstitution:this.normalizeUpper(d.destinationInstitution),reason:this.normalizeUpper(d.reason)!},create:{enrollmentId:id,withdrawalDate:wd,type,destinationInstitution:this.normalizeUpper(d.destinationInstitution),reason:this.normalizeUpper(d.reason)!}})});
+
+    const lock=automaticRosterLockDate(e.academicYear.startDate);
+    const beforeRosterLock=wd.getTime()<lock.getTime(); // incluye todo el 31/10
+
+    // Si ya comenzó noviembre, materializamos primero la nómina para garantizar que
+    // un retiro posterior al cierre conserve exactamente el número que ocupaba.
+    if(!e.section.rosterLockedAt && wd.getTime()>=lock.getTime()){
+      await this.lockRoster(e.sectionId,wd);
+      e=await this.db.enrollment.findUniqueOrThrow({where:{id},include:{academicYear:true,section:true,curriculumSubjects:{where:{active:true}}}});
+    }
+
+    // Una vez fijada la nómina no admitimos un retiro retroactivo anterior al 01/11,
+    // porque eso obligaría a renumerar posiciones que ya son definitivas.
+    if(e.section.rosterLockedAt && beforeRosterLock){
+      throw new BadRequestException('La nómina ya está fija. No puede registrarse un retiro retroactivo con fecha hasta el 31/10 porque alteraría números definitivos. Requiere corrección administrativa auditada.');
+    }
+
+    const type=beforeRosterLock?WithdrawalType.HASTA_CIERRE_MATRICULA:WithdrawalType.POST_CIERRE_MATRICULA;
+    const condition=beforeRosterLock?StudentCondition.RETIRADO:StudentCondition.RETIRADO_MODIFICADO;
+    const conditionBefore=this.isActiveAcademicCondition(e.condition)?e.condition:this.restorableCondition(e);
+    return this.db.$transaction(async tx=>{
+      await tx.enrollment.update({where:{id},data:{condition,academicCondition:conditionBefore,...(beforeRosterLock?{listNumber:null}:{})}});
+      const withdrawal=await tx.withdrawal.upsert({
+        where:{enrollmentId:id},
+        update:{...d,withdrawalDate:wd,type,destinationInstitution:this.normalizeUpper(d.destinationInstitution),reason:this.normalizeUpper(d.reason)!},
+        create:{enrollmentId:id,withdrawalDate:wd,type,destinationInstitution:this.normalizeUpper(d.destinationInstitution),reason:this.normalizeUpper(d.reason)!},
+      });
+      await tx.enrollmentMovement.create({data:{
+        enrollmentId:id,type:EnrollmentMovementType.RETIRO,movementDate:wd,withdrawalType:type,
+        destinationInstitution:this.normalizeUpper(d.destinationInstitution),reason:this.normalizeUpper(d.reason),
+        conditionBefore,conditionAfter:condition,
+      }});
+      return withdrawal;
+    });
+  }
+
+  async reinstate(id:string,d:ReinstateDto){
+    await this.requireRepresentative((await this.db.enrollment.findUniqueOrThrow({where:{id},select:{studentId:true}})).studentId);
+    let e=await this.db.enrollment.findUniqueOrThrow({where:{id},include:{
+      student:true,academicYear:true,section:true,withdrawal:true,curriculumSubjects:{where:{active:true}},
+    }});
+    if(e.condition!==StudentCondition.RETIRADO && e.condition!==StudentCondition.RETIRADO_MODIFICADO) throw new BadRequestException('Solo puede reincorporarse una matrícula que se encuentre RETIRADA');
+    if(!e.withdrawal) throw new BadRequestException('La matrícula retirada no posee un registro de retiro asociado');
+    const rd=parseSchoolCalendarDate(d.returnDate);
+    const start=new Date(e.academicYear.startDate), end=new Date(e.academicYear.endDate);
+    if(rd<start || rd>end) throw new BadRequestException('La fecha de reincorporación debe estar dentro del año escolar');
+    if(rd<new Date(e.withdrawal.withdrawalDate)) throw new BadRequestException('La fecha de reincorporación no puede ser anterior a la fecha de retiro');
+    const lock=automaticRosterLockDate(e.academicYear.startDate);
+    const beforeLock=rd.getTime()<lock.getTime();
+
+    // Si la nómina ya fue fijada y este retiro había dejado al estudiante fuera de la
+    // nómina provisional, una reincorporación retroactiva anterior al 01/11 alteraría
+    // números definitivos. Se exige corrección administrativa en lugar de renumerar.
+    if(e.section.rosterLockedAt && e.listNumber===null && beforeLock){
+      throw new BadRequestException('La nómina ya está fija. No puede registrarse retroactivamente una reincorporación anterior al 01/11 porque alteraría la numeración definitiva.');
+    }
+
+    if(!e.section.rosterLockedAt && !beforeLock){
+      await this.lockRoster(e.sectionId,rd);
+      e=await this.db.enrollment.findUniqueOrThrow({where:{id},include:{student:true,academicYear:true,section:true,withdrawal:true,curriculumSubjects:{where:{active:true}}}});
+    }
+
+    const restored=this.restorableCondition(e);
+    let listNumber=e.listNumber;
+    const fixed=!!e.section.rosterLockedAt || !beforeLock;
+    if(fixed && !listNumber) listNumber=await this.nextListNumber(e.sectionId);
+
+    return this.db.$transaction(async tx=>{
+      const studentData:any={};
+      if(d.address!==undefined) studentData.address=this.normalizeUpper(d.address);
+      if(d.phone!==undefined) studentData.phone=d.phone;
+      if(d.email!==undefined) studentData.email=d.email.trim().toLowerCase();
+      if(Object.keys(studentData).length) await tx.student.update({where:{id:e.studentId},data:studentData});
+      await tx.enrollment.update({where:{id},data:{
+        condition:restored,academicCondition:restored,listNumber:beforeLock&&!e.section.rosterLockedAt?null:listNumber,
+        isLateEnrollment:fixed && e.listNumber===null ? true : e.isLateEnrollment,
+      }});
+      await tx.withdrawal.delete({where:{enrollmentId:id}});
+      await tx.enrollmentMovement.create({data:{
+        enrollmentId:id,type:EnrollmentMovementType.REINCORPORACION,movementDate:rd,
+        conditionBefore:e.condition,conditionAfter:restored,
+        reason:'REINCORPORACIÓN DEL ESTUDIANTE A LA INSTITUCIÓN',
+      }});
+      return tx.enrollment.findUniqueOrThrow({where:{id},include:{student:true,academicYear:true,studyPlan:true,section:true,withdrawal:true,curriculumSubjects:{where:{active:true},include:{studyPlanSubject:{include:{subject:true}}}}}});
+    });
   }
 
   updateCondition(id:string,condition:StudentCondition){return this.db.enrollment.update({where:{id},data:{condition}})}
@@ -486,11 +692,15 @@ export class EnrollmentService{
     });
     const unlockedSectionIds=[...new Set(rows.filter((r:any)=>!r.section.rosterLockedAt).map((r:any)=>r.sectionId))] as string[];
     const provisional=await this.provisionalNumberMap(unlockedSectionIds);
-    const decorated=rows.map((row:any)=>({
-      ...row,
-      displayListNumber:row.section.rosterLockedAt?row.listNumber:provisional.get(row.id),
-      rosterStatus:row.section.rosterLockedAt?'FIJA':'PROVISIONAL',
-    }));
+    const decorated=rows.map((row:any)=>{
+      const excludedFromRoster=this.isExcludedByEarlyWithdrawal(row,row.academicYear);
+      return {
+        ...row,
+        excludedFromRoster,
+        displayListNumber:excludedFromRoster?null:(row.section.rosterLockedAt?row.listNumber:provisional.get(row.id)),
+        rosterStatus:excludedFromRoster?'FUERA_DE_NOMINA':(row.section.rosterLockedAt?'FIJA':'PROVISIONAL'),
+      };
+    });
     decorated.sort((a:any,b:any)=>{
       const byYear=new Date(b.academicYear.startDate).getTime()-new Date(a.academicYear.startDate).getTime();
       if(byYear!==0) return byYear;
@@ -519,6 +729,7 @@ export class EnrollmentController{
   @Roles(Role.ADMIN,Role.DIRECTOR,Role.SECRETARIA) @Post('re-enrollment') reEnroll(@Body()dto:ReEnrollDto){return this.s.reEnroll(dto)}
   @Roles(Role.ADMIN,Role.DIRECTOR,Role.SECRETARIA) @Post('roster/:sectionId/lock') lock(@Param('sectionId')id:string){return this.s.lockRoster(id)}
   @Roles(Role.ADMIN,Role.DIRECTOR,Role.SECRETARIA) @Post(':id/withdraw') withdraw(@Param('id')id:string,@Body()dto:WithdrawDto){return this.s.withdraw(id,dto)}
+  @Roles(Role.ADMIN,Role.DIRECTOR,Role.SECRETARIA) @Post(':id/reinstate') reinstate(@Param('id')id:string,@Body()dto:ReinstateDto){return this.s.reinstate(id,dto)}
   @Roles(Role.ADMIN,Role.DIRECTOR) @Patch(':id/condition') condition(@Param('id')id:string,@Body('condition')c:StudentCondition){return this.s.updateCondition(id,c)}
   @Roles(Role.ADMIN,Role.DIRECTOR) @Post('year/:yearId/inactivate') inactivateYear(@Param('yearId')yearId:string){return this.s.inactivateYear(yearId)}
   @Roles(Role.ADMIN,Role.DIRECTOR) @Post(':id/graduate') graduate(@Param('id')id:string){return this.s.graduate(id)}

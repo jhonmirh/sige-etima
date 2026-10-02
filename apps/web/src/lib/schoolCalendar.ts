@@ -32,3 +32,17 @@ export function storedDateKey(v: any) {
   if (!v) return '';
   return new Date(v).toISOString().slice(0, 10);
 }
+
+export function rosterLockDateKeyFromClose(closeDate: any) {
+  if (!closeDate) return '';
+  const key = storedDateKey(closeDate);
+  const [y,m,d] = key.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+}
+
+export function rosterLockLabelFromClose(closeDate: any) {
+  const key = rosterLockDateKeyFromClose(closeDate);
+  if (!key) return '01/11/AAAA';
+  const [y,m,d] = key.split('-');
+  return `${d}/${m}/${y}`;
+}

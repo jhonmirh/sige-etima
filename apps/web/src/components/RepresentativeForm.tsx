@@ -1,9 +1,10 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { FormEvent, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { DIGITS_PATTERN, NAME_PATTERN, digitsOnlyInput, nameOnlyInput, toUpperInput } from '@/lib/formRules';
+import { calculateAge, latestBirthDateForMinimumAge } from '@/lib/age';
 
 const BLOOD_TYPES = ['', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const UPPERCASE_FIELDS = new Set([
@@ -31,11 +32,19 @@ export default function RepresentativeForm({ mode, representative, studentId }: 
   const [error, setError] = useState('');
   const [relationship, setRelationship] = useState('MADRE');
   const d = representative || {};
+  const [birthDate, setBirthDate] = useState(d.birthDate ? String(d.birthDate).slice(0, 10) : '');
+  const age = useMemo(() => calculateAge(birthDate), [birthDate]);
+  const maxBirthDate = latestBirthDateForMinimumAge(18);
+  const ageInvalid = age !== null && age < 18;
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setSaving(true);
     setError('');
+    if (!birthDate || age === null || age < 18) {
+      setError('El representante debe tener al menos 18 años cumplidos. Revise la fecha de nacimiento.');
+      return;
+    }
+    setSaving(true);
     try {
       const data = payload(e.currentTarget);
       const requiresDescription = relationship === 'AUTORIZADO' || relationship === 'OTRO';
@@ -103,7 +112,8 @@ export default function RepresentativeForm({ mode, representative, studentId }: 
       <div><label>Teléfono principal *</label><input className="input" name="phone1" defaultValue={d.phone1 || ''} placeholder="04121234567" maxLength={15} required {...digitsProps} /></div>
       <div><label>Segundo teléfono</label><input className="input" name="phone2" defaultValue={d.phone2 || ''} maxLength={15} {...digitsProps} /></div>
       <div><label>Correo electrónico</label><input className="input" type="email" name="email" defaultValue={d.email || ''} /></div>
-      <div><label>Fecha de nacimiento</label><input className="input" type="date" name="birthDate" max={new Date().toISOString().slice(0, 10)} defaultValue={d.birthDate ? String(d.birthDate).slice(0, 10) : ''} /></div>
+      <div><label>Fecha de nacimiento *</label><input className="input" type="date" name="birthDate" max={maxBirthDate} value={birthDate} onChange={(e) => setBirthDate(e.target.value)} required /><small className={ageInvalid ? 'field-error' : 'field-hint'}>Debe tener al menos 18 años cumplidos.</small></div>
+      <div><label>Edad actual</label><div className="input read-only">{age === null ? '—' : `${age} AÑOS`}</div></div>
       <div><label>Lugar de nacimiento</label><input className="input uppercase" name="birthPlace" defaultValue={d.birthPlace || ''} onInput={toUpperInput} /></div>
       <div><label>Grupo sanguíneo</label><select className="input" name="bloodType" defaultValue={d.bloodType || ''}>{BLOOD_TYPES.map((x) => <option key={x || 'none'} value={x}>{x || 'NO INDICADO'}</option>)}</select></div>
       <div className="span-3"><label>Dirección *</label><textarea className="input textarea uppercase" name="address" defaultValue={d.address || ''} onInput={toUpperInput} required /></div>

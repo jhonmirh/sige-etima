@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Link2, Search, UserRoundPlus, UsersRound } from 'lucide-react';
+import { ArrowLeft, Link2, RefreshCw, Search, UserRoundPlus, UsersRound } from 'lucide-react';
 import Shell from '@/components/Shell';
 import { api } from '@/lib/api';
 import { toUpperInput } from '@/lib/formRules';
@@ -25,10 +25,18 @@ export default function LinkRepresentativeToStudent(){
   const [saving,setSaving]=useState(false);
   const [relationship,setRelationship]=useState('MADRE');
 
+  async function loadData(){
+    try{
+      const [s,reps]:any[]=await Promise.all([api(`/students/${id}`),api('/representatives?active=true')]);
+      setStudent(s);setRepresentatives(reps);setError('');
+    }catch(e:any){setError(e.message)}
+  }
+
   useEffect(()=>{
-    Promise.all([api(`/students/${id}`),api('/representatives?active=true')])
-      .then(([s,reps])=>{setStudent(s);setRepresentatives(reps)})
-      .catch((e:any)=>setError(e.message));
+    loadData();
+    const refresh=()=>loadData();
+    window.addEventListener('focus',refresh);
+    return()=>window.removeEventListener('focus',refresh);
   },[id]);
 
   const available=useMemo(()=>{
@@ -86,7 +94,7 @@ export default function LinkRepresentativeToStudent(){
     <form onSubmit={submit} className="stack">
       <section className="card form-section">
         <div className="section-head"><div><h2>1. Buscar y seleccionar representante</h2><p>Busca por nombre, apellido, cédula o teléfono.</p></div></div>
-        <div className="search-box" style={{marginBottom:14}}><Search size={18}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Ej.: V-12345678, MARÍA PÉREZ o 0412..."/></div>
+        <div className="row-actions" style={{marginBottom:14}}><div className="search-box" style={{flex:1}}><Search size={18}/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Ej.: V-12345678, MARÍA PÉREZ o 0412..."/></div><button type="button" className="btn secondary" onClick={loadData}><RefreshCw size={16}/> Actualizar lista</button></div>
         {available.length===0?<div className="empty-state"><UsersRound size={28}/><strong>No hay representantes disponibles</strong><span>Puede que todos estén vinculados o que todavía no exista el representante.</span><Link className="btn" href={`/representatives/new?studentId=${id}`}><UserRoundPlus size={16}/> Crear representante</Link></div>:
         <div className="table-wrap"><table><thead><tr><th></th><th>Cédula</th><th>Representante</th><th>Teléfono</th><th>Estudiantes asociados</th></tr></thead><tbody>{available.map((r:any)=><tr key={r.id} onClick={()=>setSelected(r.id)} style={{cursor:'pointer'}}><td><input type="radio" name="representativeChoice" checked={selected===r.id} onChange={()=>setSelected(r.id)}/></td><td><strong>{identityLabel(r)}</strong></td><td>{[r.firstName,r.middleName,r.lastName,r.secondLastName].filter(Boolean).join(' ')}</td><td>{r.phone1}</td><td>{r.students?.length||0}</td></tr>)}</tbody></table></div>}
       </section>

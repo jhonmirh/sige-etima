@@ -33,9 +33,11 @@ import {
   Prisma,
   Role,
   Sex,
+  StudentCondition,
 } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { JwtAuthGuard, Roles, RolesGuard } from '../common/security';
+import { ageOnDate } from '../common/age';
 
 const BLOOD_TYPES = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const GARMENT_SIZES = ['10', '11', '12', '13', '14', '15', '16', 'S', 'M', 'L', 'XL', '2XL', '3XL'];
@@ -147,12 +149,11 @@ const EMERGENCY_UPPERCASE_FIELDS = new Set([
 export class StudentsService {
   constructor(private db: PrismaService) {}
 
-  list(search?: string, active?: boolean) {
+  async list(search?: string, active?: boolean) {
     const term = search?.trim();
     const numericTerm = term?.replace(/^[VEve][-\s]?/, '').replace(/\D/g, '');
-    return this.db.student.findMany({
+    const rows = await this.db.student.findMany({
       where: {
-        ...(active === undefined ? {} : { active }),
         ...(term
           ? {
               OR: [
@@ -170,12 +171,24 @@ export class StudentsService {
       include: {
         enrollments: {
           take: 1,
-          orderBy: { registrationDate: 'desc' },
-          include: { academicYear: true, section: true, studyPlan: true },
+          orderBy: [{ academicYear: { startDate: 'desc' } }, { registrationDate: 'desc' }],
+          include: { academicYear: true, section: true, studyPlan: true, withdrawal: true },
         },
         representatives: { include: { representative: true } },
       },
     });
+    const activeConditions = new Set<StudentCondition>([StudentCondition.REGULAR, StudentCondition.MATERIA_PENDIENTE, StudentCondition.REPITIENTE]);
+    const decorated = rows.map((row:any) => {
+      const latest = row.enrollments?.[0];
+      let displayStatus = row.active ? 'ACTIVO' : 'INACTIVO';
+      let academicallyActive = !!row.active;
+      if (row.active && latest) {
+        displayStatus = latest.condition;
+        academicallyActive = activeConditions.has(latest.condition);
+      }
+      return { ...row, academicallyActive, displayStatus };
+    });
+    return active === undefined ? decorated : decorated.filter((row:any) => row.academicallyActive === active);
   }
 
   get(id: string) {
@@ -230,8 +243,15 @@ export class StudentsService {
     return data;
   }
 
+  private validateMinimumAge(birthDate?: string) {
+    if (!birthDate) return;
+    const age = ageOnDate(birthDate);
+    if (age < 10) throw new BadRequestException('El estudiante debe tener al menos 10 años cumplidos');
+  }
+
   async create(dto: CreateStudentDto) {
     await this.validateGeography(dto);
+    this.validateMinimumAge(dto.birthDate);
     try {
       return await this.db.student.create({ data: this.normalizeStudentData(dto) as Prisma.StudentUncheckedCreateInput });
     } catch (error: any) {
@@ -241,6 +261,7 @@ export class StudentsService {
   }
 
   async update(id: string, dto: UpdateStudentDto) {
+    this.validateMinimumAge(dto.birthDate);
     const current = await this.db.student.findUniqueOrThrow({ where: { id } });
     await this.validateGeography({
       birthStateId: dto.birthStateId ?? current.birthStateId ?? undefined,

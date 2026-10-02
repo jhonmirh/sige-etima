@@ -112,8 +112,16 @@ enum AttemptStatus {
   INASISTENTE
 }
 enum WithdrawalType {
+  // Valores históricos conservados por compatibilidad con registros anteriores.
   PRIMEROS_30_DIAS
   RESTO_ANO
+  // Regla vigente: hasta el 31/10 sale de nómina; desde el 01/11 conserva posición.
+  HASTA_CIERRE_MATRICULA
+  POST_CIERRE_MATRICULA
+}
+enum EnrollmentMovementType {
+  RETIRO
+  REINCORPORACION
 }
 enum EnrollmentSubjectOrigin {
   PLAN_ACTUAL
@@ -490,6 +498,7 @@ model Enrollment {
   academicOutcomeFinalizedAt DateTime?
   anthropometrics AnthropometricRecord[]
   withdrawal Withdrawal?
+  movements EnrollmentMovement[]
   attempts AssessmentAttempt[]
   lapseGrades LapseGrade[]
   annualResults AnnualSubjectResult[]
@@ -526,6 +535,22 @@ model Withdrawal {
   reason String
   type WithdrawalType
   createdAt DateTime @default(now())
+}
+
+model EnrollmentMovement {
+  id String @id @default(uuid())
+  enrollmentId String
+  enrollment Enrollment @relation(fields:[enrollmentId], references:[id], onDelete:Cascade)
+  type EnrollmentMovementType
+  movementDate DateTime
+  withdrawalType WithdrawalType?
+  destinationInstitution String?
+  reason String?
+  conditionBefore StudentCondition?
+  conditionAfter StudentCondition?
+  createdAt DateTime @default(now())
+  @@index([enrollmentId, movementDate])
+  @@index([type, movementDate])
 }
 
 model Contribution {

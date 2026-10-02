@@ -34,3 +34,4 @@ html[data-theme="dark"]{--bg:#07111f;--panel:#0d1b2d;--text:#e8eef8;--muted:#93a
   color:#fed7aa;
 }
 .dark .academic-regression-warning strong{color:#fdba74}
+.field-error{display:block;margin-top:6px;color:var(--danger);font-size:12px;font-weight:700}.field-hint{display:block;margin-top:6px;color:var(--muted);font-size:12px}

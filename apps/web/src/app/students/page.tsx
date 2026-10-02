@@ -16,6 +16,19 @@ function identityLabel(row:any){
   return row.schoolIdentityNumber || 'SIN CÉDULA';
 }
 
+function statusLabel(row:any){
+  const value=row.displayStatus||'ACTIVO';
+  if(value==='RETIRADO_MODIFICADO') return 'RETIRADO';
+  return value.replaceAll('_',' ');
+}
+
+function statusClass(row:any){
+  const value=row.displayStatus;
+  if(['REGULAR','MATERIA_PENDIENTE','REPITIENTE','ACTIVO'].includes(value)) return 'ok';
+  if(['RETIRADO','RETIRADO_MODIFICADO'].includes(value)) return 'warn';
+  return 'neutral';
+}
+
 export default function Students(){
   const [rows,setRows]=useState<any[]>([]);
   const [q,setQ]=useState('');
@@ -30,8 +43,8 @@ export default function Students(){
     try{setRows(await api(`/students${params.toString()?`?${params}`:''}`))}finally{setLoading(false)}
   }
 
-  useEffect(()=>{const t=setTimeout(()=>load(q,status),250);return()=>clearTimeout(t)},[q,status]);
-  const activeCount=useMemo(()=>rows.filter(x=>x.active).length,[rows]);
+  useEffect(()=>{const t=setTimeout(()=>load(q,status),250);const onFocus=()=>load(q,status);window.addEventListener('focus',onFocus);return()=>{clearTimeout(t);window.removeEventListener('focus',onFocus)}},[q,status]);
+  const activeCount=useMemo(()=>rows.filter(x=>x.academicallyActive).length,[rows]);
 
   return <Shell title="Estudiantes">
     <div className="page-heading"><div><span className="eyebrow">Gestión estudiantil</span><h1>Ficha integral del estudiante</h1><p>Identificación, familia, salud, representantes, documentos y trayectoria escolar.</p></div><Link className="btn" href="/students/new"><UserPlus size={17}/> Nuevo estudiante</Link></div>
@@ -57,7 +70,7 @@ export default function Students(){
           <td>{r.sex}</td><td>{age(r.birthDate)} AÑOS</td>
           <td>{rep?<div className="rep-cell"><strong>{rep.firstName} {rep.lastName}</strong><span className="muted">{primary?'PRINCIPAL':'VINCULADO'}</span><Link className="inline-action" href={`/students/${r.id}/representatives/link`}><Link2 size={14}/> Gestionar</Link></div>:<div className="rep-cell missing"><span className="status warn">SIN REPRESENTANTE</span><div className="row-actions"><Link className="inline-action" href={`/students/${r.id}/representatives/link`}><Link2 size={14}/> Asignar existente</Link><Link className="inline-action" href={`/representatives/new?studentId=${r.id}`}><UserRoundPlus size={14}/> Crear nuevo</Link></div></div>}</td>
           <td>{e?<><strong>{e.academicYear?.name}</strong><div className="muted">{e.gradeLevel}° · {e.section?.mentionName?`${e.section.mentionName} · `:''}{e.section?.name}</div></>:'SIN MATRÍCULA'}</td>
-          <td><span className={`status ${r.active?'ok':'neutral'}`}>{r.active?'ACTIVO':'INACTIVO'}</span></td>
+          <td><span className={`status ${statusClass(r)}`}>{statusLabel(r)}</span></td>
         </tr>
       })}</tbody></table>
     </div>

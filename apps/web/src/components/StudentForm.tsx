@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { DIGITS_PATTERN, NAME_PATTERN, digitsOnlyInput, nameOnlyInput, toUpperInput } from '@/lib/formRules';
+import { calculateAge, latestBirthDateForMinimumAge } from '@/lib/age';
 
 const BLOOD_TYPES = ['', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 
@@ -77,20 +78,18 @@ export default function StudentForm({ mode, student }: Props) {
     [residenceMunicipalities, residenceMunicipalityId],
   );
 
-  const age = useMemo(() => {
-    if (!birthDate) return null;
-    const born = new Date(`${birthDate}T00:00:00`);
-    const now = new Date();
-    let years = now.getFullYear() - born.getFullYear();
-    const m = now.getMonth() - born.getMonth();
-    if (m < 0 || (m === 0 && now.getDate() < born.getDate())) years--;
-    return years >= 0 ? years : null;
-  }, [birthDate]);
+  const age = useMemo(() => calculateAge(birthDate), [birthDate]);
+  const maxBirthDate = latestBirthDateForMinimumAge(10);
+  const ageInvalid = age !== null && age < 10;
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setSaving(true);
     setError('');
+    if (!birthDate || age === null || age < 10) {
+      setError('El estudiante debe tener al menos 10 años cumplidos. Revise la fecha de nacimiento.');
+      return;
+    }
+    setSaving(true);
     try {
       const data = cleanPayload(e.currentTarget);
       const result: any = await api(mode === 'create' ? '/students' : `/students/${student.id}`, {
@@ -106,7 +105,6 @@ export default function StudentForm({ mode, student }: Props) {
   }
 
   const d = student || {};
-  const maxBirthDate = new Date().toISOString().slice(0, 10);
 
   const nameProps = {
     pattern: NAME_PATTERN,
@@ -146,7 +144,7 @@ export default function StudentForm({ mode, student }: Props) {
         {geoLoading && <div className="info-banner">Cargando catálogo territorial…</div>}
         {geoError && <div className="alert">{geoError}</div>}
         <div className="form-grid cols-3">
-          <div><label>Fecha de nacimiento *</label><input className="input" name="birthDate" type="date" max={maxBirthDate} value={birthDate} onChange={(e) => setBirthDate(e.target.value)} required /></div>
+          <div><label>Fecha de nacimiento *</label><input className="input" name="birthDate" type="date" max={maxBirthDate} value={birthDate} onChange={(e) => setBirthDate(e.target.value)} required /><small className={ageInvalid ? 'field-error' : 'field-hint'}>Edad mínima permitida: 10 años cumplidos.</small></div>
           <div><label>Edad actual</label><div className="input read-only">{age === null ? '—' : `${age} AÑOS`}</div></div>
           <div><label>Lugar de nacimiento *</label><input className="input uppercase" name="birthPlace" defaultValue={d.birthPlace || ''} onInput={toUpperInput} required /></div>
           <div><label>Estado de nacimiento *</label><select className="input" name="birthStateId" value={birthStateId} onChange={(e) => { setBirthStateId(e.target.value); setBirthMunicipalityId(''); setBirthParishId(''); }} required><option value="">SELECCIONE</option>{geo.map((x) => <option key={x.id} value={x.id}>{x.name.toLocaleUpperCase('es-VE')}</option>)}</select></div>

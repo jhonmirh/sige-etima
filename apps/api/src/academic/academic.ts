@@ -107,8 +107,8 @@ export class AcademicService {
         if (!current.enrollmentCloseDate || current.enrollmentCloseDate.getTime() !== expected.getTime()) {
           await this.db.academicYear.update({ where: { id: current.id }, data: { enrollmentCloseDate: expected } });
         }
-        // Al consultar las secciones después del 31/10, la nómina se materializa
-        // automáticamente sin botón ni intervención del usuario.
+        // Al consultar las secciones desde el 01/11, la nómina se materializa
+        // automáticamente sin botón ni intervención del usuario. El 31/10 aún es provisional.
         await this.enrollmentService.ensureYearRostersLockedIfDue(year, new Date());
       }
     }
